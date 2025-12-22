@@ -1,0 +1,13 @@
+# Schwab Trades Module Requirements
+# Install with: pip install -r requirements.txt
+
+# Core dependencies
+schwab-py>=1.0.0
+pandas>=1.3.0
+python-dateutil>=2.8.0
+pytz>=2021.1
+
+# Optional dependencies for enhanced functionality
+requests>=2.25.0  # For potential future API enhancements
+openpyxl>=3.0.0   # For Excel integration (if needed)
+

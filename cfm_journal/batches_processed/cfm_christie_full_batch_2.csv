@@ -1,0 +1,11 @@
+Command,Strategy,Account,Symbol,Side,Action,Contracts,Strike,Expiry,Premium,Buyback,Date,Time,Underlying,UnderlyingClose,Notes
+close,CFM_CC,Christie,NVDA,Call,TO CLOSE,2,165,12/5/2025,,20.49,12/2/2025,8:47:02,,,
+open,CFM_CC,Christie,NVDA,Call,TO OPEN,2,175,12/5/2025,10.85,,12/2/2025,8:47:02,,,
+close,CFM_CC,Christie,NVDA,Call,TO CLOSE,2,175,12/5/2025,,8.68,12/4/2025,12:01:30,,,
+open,CFM_CC,Christie,NVDA,Call,TO OPEN,4,172.5,12/12/2025,12.03,,12/4/2025,12:07:02,,,
+close,CFM_CC,Christie,NVDA,Call,TO CLOSE,4,167.5,12/5/2025,,15.84,12/4/2025,12:07:02,,,
+open,CFM_CC,Christie,NVDA,Call,TO OPEN,1,172.5,12/12/2025,12,,12/4/2025,12:07:26,,,
+close,CFM_CC,Christie,NVDA,Call,TO CLOSE,1,170,12/5/2025,,13.28,12/4/2025,12:07:26,,,
+open,JL,Christie,NVDA,Call,TO OPEN,2,177.5,12/12/2025,8.3,,12/4/2025,12:14:42,,,
+close,JL,Christie,NVDA,Call,TO CLOSE,2,172.5,12/12/2025,,12.3,12/4/2025,12:14:42,,,
+open,JL,Christie,NVDA,Put,TO OPEN,2,190,12/12/2025,8.1,,12/4/2025,12:15:02,,,

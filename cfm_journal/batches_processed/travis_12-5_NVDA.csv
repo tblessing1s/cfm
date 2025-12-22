@@ -1,0 +1,4 @@
+Command,Strategy,Account,Symbol,Side,Action,Contracts,Strike,Expiry,Premium,Buyback,Date,Time,Underlying,UnderlyingClose
+open,CFM_CC,Travis,NVDA,Call,TO OPEN,2,167.5,12/5/2025,14.86,,11/26/2025,8:41,,
+close,CFM_CC,Travis,NVDA,Call,TO CLOSE,1,167.5,12/5/2025,,16.29,12/4/2025,12:31,,
+close,CFM_CC,Travis,NVDA,Call,TO CLOSE,1,167.5,12/5/2025,,16.15,12/4/2025,12:37,,

@@ -1,0 +1,687 @@
+<div class="screen">
+  <header>
+    <h1>CFM Juice Dashboard</h1>
+    <p>Realtime analytics powered by the FastAPI backend.</p>
+    <div class="account-selector" *ngIf="accounts.length">
+      <label for="account-select">Account (Travis / Christie)</label>
+      <select
+        id="account-select"
+        class="mt-1 w-full rounded-full border border-border bg-surface-2 px-4 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+        [value]="selectedAccount"
+        (change)="onAccountChange($event.target.value)"
+      >
+        <option *ngFor="let account of accounts" [value]="account.name">
+          {{ account.label }}
+        </option>
+      </select>
+    </div>
+  </header>
+
+  <section class="entry-card">
+    <div class="entry-header">
+      <div>
+        <h2>Quick Trade Entry</h2>
+        <p>Stage trades with all required ledger fields and send straight to the XLSX.</p>
+      </div>
+      <div class="entry-actions">
+        <button
+          type="button"
+          class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft transition hover:border-accent/60 hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+          (click)="resetDraft()"
+        >
+          Reset form
+        </button>
+        <button
+          type="button"
+          class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft transition hover:border-accent/60 hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+          [disabled]="!pendingTrades.length"
+          (click)="clearStagedTrades()"
+        >
+          Clear staged
+        </button>
+      </div>
+    </div>
+
+    <div class="entry-grid">
+      <label>
+        <span>Action</span>
+        <select
+          class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+          [(ngModel)]="tradeDraft.action"
+          name="entryAction"
+        >
+          <option [ngValue]="'Open'">Open</option>
+          <option [ngValue]="'Close'">Close</option>
+        </select>
+      </label>
+
+      <label>
+        <span>Strategy</span>
+        <select
+          class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+          [(ngModel)]="tradeDraft.strategy"
+          name="entryStrategy"
+          (ngModelChange)="onStrategyChange($event)"
+        >
+          <option [ngValue]="'Cashflow Machine'">Cashflow Machine</option>
+          <option [ngValue]="'Juice Lever'">Juice Lever</option>
+        </select>
+      </label>
+
+      <label>
+        <span>Side</span>
+        <select
+          class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30 disabled:opacity-60"
+          [(ngModel)]="tradeDraft.side"
+          name="entrySide"
+          [disabled]="tradeDraft.strategy === 'Cashflow Machine'"
+        >
+          <option [ngValue]="'Call'">Call</option>
+          <option [ngValue]="'Put'">Put</option>
+        </select>
+      </label>
+
+      <label>
+        <span>Ticker</span>
+        <input
+          type="text"
+          class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+          [(ngModel)]="tradeDraft.ticker"
+          name="entryTicker"
+          (blur)="normalizeTicker()"
+          list="ticker-options"
+          placeholder="AAPL"
+        />
+        <datalist id="ticker-options">
+          <option *ngFor="let ticker of tickerSuggestions" [value]="ticker"></option>
+        </datalist>
+      </label>
+
+      <label>
+        <span>Contracts</span>
+        <input
+          type="number"
+          step="1"
+          min="1"
+          class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+          [(ngModel)]="tradeDraft.contracts"
+          name="entryContracts"
+        />
+      </label>
+
+      <label>
+        <span>Strike</span>
+        <input
+          type="number"
+          step="0.01"
+          class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+          [(ngModel)]="tradeDraft.strike"
+          name="entryStrike"
+        />
+      </label>
+
+      <label>
+        <span>Premium / Buyback</span>
+        <input
+          type="number"
+          step="0.01"
+          class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+          [(ngModel)]="tradeDraft.premium"
+          name="entryPremium"
+        />
+      </label>
+
+      <label>
+        <span>Trade date & time</span>
+        <input
+          type="datetime-local"
+          class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+          [(ngModel)]="tradeDraft.trade_datetime"
+          name="entryTradeDateTime"
+        />
+      </label>
+
+      <label>
+        <span>Expiration</span>
+        <input
+          type="date"
+          class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+          [(ngModel)]="tradeDraft.expiry"
+          name="entryExpiry"
+        />
+      </label>
+    </div>
+
+    <div class="entry-actions">
+      <button
+        type="button"
+        class="rounded-lg bg-gradient-to-r from-accent to-accent-strong px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-[rgba(210,139,87,0.25)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+        [disabled]="!canStageTrade"
+        (click)="editingLedgerRowNumber ? saveLedgerEdit() : stageTrade()"
+      >
+        {{ editingLedgerRowNumber ? 'Save edit' : 'Stage trade' }}
+      </button>
+      <button
+        *ngIf="editingLedgerRowNumber"
+        type="button"
+        class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft transition hover:border-accent/60 hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+        (click)="cancelLedgerEdit()"
+      >
+        Cancel edit
+      </button>
+    </div>
+
+    <div *ngIf="entryError" class="state error small">{{ entryError }}</div>
+    <div *ngIf="entrySuccess" class="state success small">{{ entrySuccess }}</div>
+  </section>
+
+  <section *ngIf="loading" class="state">Loading metrics…</section>
+  <section *ngIf="error" class="state error">{{ error }}</section>
+
+  <section class="trades-panel" *ngIf="tradesLoading">
+    <p>Loading trades…</p>
+  </section>
+
+  <section class="trades-panel" *ngIf="pendingTrades.length">
+    <div class="staged-header">
+      <div>
+        <h2>Staged trades</h2>
+        <p>Submit directly to the ledger or copy the JSON for scripts.</p>
+      </div>
+      <div class="entry-actions">
+        <button
+          type="button"
+          class="rounded-lg bg-gradient-to-r from-accent to-accent-strong px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-[rgba(210,139,87,0.25)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+          [disabled]="submitLoading"
+          (click)="submitTrades()"
+        >
+          {{ submitLoading ? 'Submitting…' : 'Submit to journal' }}
+        </button>
+        <button
+          type="button"
+          class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft transition hover:border-accent/60 hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+          (click)="copyStagedTrades()"
+        >
+          Copy JSON
+        </button>
+        <button
+          type="button"
+          class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft transition hover:border-accent/60 hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+          (click)="clearStagedTrades()"
+        >
+          Clear
+        </button>
+      </div>
+    </div>
+
+    <div class="table-wrapper rounded-lg border border-border bg-surface-2/40">
+      <table
+        class="w-full border-collapse text-sm [&_th]:px-2 [&_th]:py-2 [&_td]:px-2 [&_td]:py-2 [&_th]:text-left [&_td]:text-left [&_tbody_tr]:border-b [&_tbody_tr]:border-border [&_tbody_tr:nth-child(even)]:bg-surface-2"
+      >
+        <thead class="text-xs uppercase tracking-wider text-muted">
+          <tr>
+            <th>Account</th>
+            <th>Trade Date/Time</th>
+            <th>Action</th>
+            <th>Side</th>
+            <th>Ticker</th>
+            <th>Strategy</th>
+            <th>Contracts</th>
+            <th>Strike</th>
+            <th>Expiry</th>
+            <th>Premium</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr *ngFor="let trade of pendingTrades; let i = index">
+            <td>{{ trade.account }}</td>
+            <td>{{ trade.trade_datetime | date: 'medium' }}</td>
+            <td>{{ trade.action }}</td>
+            <td>{{ trade.side }}</td>
+            <td>{{ trade.ticker }}</td>
+            <td>{{ trade.strategy }}</td>
+            <td>{{ trade.contracts }}</td>
+            <td>{{ trade.strike }}</td>
+            <td>{{ trade.expiry | date: 'mediumDate' }}</td>
+            <td>{{ trade.premium }}</td>
+            <td class="flex gap-2">
+              <button
+                type="button"
+                class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs text-soft transition hover:border-accent/60 hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+                (click)="editStagedTrade(i)"
+              >
+                Edit
+              </button>
+              <button
+                type="button"
+                class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs text-soft transition hover:border-accent/60 hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+                (click)="removeStagedTrade(i)"
+              >
+                Remove
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="json-preview">
+      <p>JSON preview ({{ pendingTrades.length }} staged)</p>
+      <pre>{{ stagedJson }}</pre>
+    </div>
+
+    <div *ngIf="copyFeedback" class="state small">{{ copyFeedback }}</div>
+    <div *ngIf="submitError" class="state error small">{{ submitError }}</div>
+    <div *ngIf="submitSuccess" class="state success small">{{ submitSuccess }}</div>
+  </section>
+
+  <section class="trades-panel">
+    <div class="staged-header">
+      <div>
+        <h2>Ledger View ({{ selectedAccountLabel }})</h2>
+        <p>Live rows pulled directly from the XLSX ledger.</p>
+      </div>
+      <button
+        type="button"
+        class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft transition hover:border-accent/60 hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+        [disabled]="ledgerLoading"
+        (click)="selectedAccount && loadLedger(selectedAccount)"
+      >
+        {{ ledgerLoading ? 'Refreshing…' : 'Refresh' }}
+      </button>
+    </div>
+
+    <div
+      class="ledger-filters"
+      *ngIf="
+        tickerFilterOptions.length ||
+        sideFilterOptions.length ||
+        strikeFilterOptions.length ||
+        expiryFilterOptions.length
+      "
+    >
+      <div class="filter-dropdown" [class.open]="tickerFilterOpen" *ngIf="tickerFilterOptions.length">
+        <button
+          type="button"
+          class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft transition hover:border-accent/60 hover:text-text"
+          (click)="toggleTickerFilter()"
+        >
+          Tickers
+          <span class="rounded-full bg-accent/20 px-2 py-0.5 text-xs text-accent-strong" *ngIf="selectedTickers.length">
+            {{ selectedTickers.length }} selected
+          </span>
+        </button>
+        <div
+          class="absolute left-0 top-full z-10 mt-2 max-h-60 w-56 overflow-auto rounded-lg border border-border bg-surface p-2 shadow-xl shadow-[rgba(8,12,21,0.65)]"
+          *ngIf="tickerFilterOpen"
+        >
+          <label class="flex items-center gap-2 px-1 py-1 text-sm text-text">
+            <input
+              type="checkbox"
+              class="h-4 w-4 rounded border-border bg-surface-2 text-accent focus:ring-2 focus:ring-accent/30"
+              [checked]="isAllTickersSelected()"
+              (change)="toggleAllTickers($event.target.checked)"
+            />
+            <span>Select all</span>
+          </label>
+          <div class="my-2 h-px bg-border"></div>
+          <label class="flex items-center gap-2 px-1 py-1 text-sm text-text" *ngFor="let ticker of tickerFilterOptions">
+            <input
+              type="checkbox"
+              class="h-4 w-4 rounded border-border bg-surface-2 text-accent focus:ring-2 focus:ring-accent/30"
+              [checked]="selectedTickers.includes(ticker)"
+              (change)="toggleTickerSelection(ticker, $event.target.checked)"
+            />
+            <span>{{ ticker }}</span>
+          </label>
+        </div>
+      </div>
+      <div class="text-xs text-muted" *ngIf="tickerFilterOptions.length && !selectedTickers.length">
+        All tickers selected
+      </div>
+      <div class="filter-dropdown" [class.open]="sideFilterOpen" *ngIf="sideFilterOptions.length">
+        <button
+          type="button"
+          class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft transition hover:border-accent/60 hover:text-text"
+          (click)="toggleSideFilter()"
+        >
+          Side
+          <span class="rounded-full bg-accent/20 px-2 py-0.5 text-xs text-accent-strong" *ngIf="selectedSides.length">
+            {{ selectedSides.length }} selected
+          </span>
+        </button>
+        <div
+          class="absolute left-0 top-full z-10 mt-2 max-h-60 w-56 overflow-auto rounded-lg border border-border bg-surface p-2 shadow-xl shadow-[rgba(8,12,21,0.65)]"
+          *ngIf="sideFilterOpen"
+        >
+          <label class="flex items-center gap-2 px-1 py-1 text-sm text-text">
+            <input
+              type="checkbox"
+              class="h-4 w-4 rounded border-border bg-surface-2 text-accent focus:ring-2 focus:ring-accent/30"
+              [checked]="isAllSidesSelected()"
+              (change)="toggleAllSides($event.target.checked)"
+            />
+            <span>Select all</span>
+          </label>
+          <div class="my-2 h-px bg-border"></div>
+          <label class="flex items-center gap-2 px-1 py-1 text-sm text-text" *ngFor="let side of sideFilterOptions">
+            <input
+              type="checkbox"
+              class="h-4 w-4 rounded border-border bg-surface-2 text-accent focus:ring-2 focus:ring-accent/30"
+              [checked]="selectedSides.includes(side)"
+              (change)="toggleSideSelection(side, $event.target.checked)"
+            />
+            <span>{{ side }}</span>
+          </label>
+        </div>
+      </div>
+      <div class="text-xs text-muted" *ngIf="sideFilterOptions.length && !selectedSides.length">
+        All sides selected
+      </div>
+      <div class="filter-dropdown" [class.open]="strikeFilterOpen" *ngIf="strikeFilterOptions.length">
+        <button
+          type="button"
+          class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft transition hover:border-accent/60 hover:text-text"
+          (click)="toggleStrikeFilter()"
+        >
+          Strike
+          <span class="rounded-full bg-accent/20 px-2 py-0.5 text-xs text-accent-strong" *ngIf="selectedStrikes.length">
+            {{ selectedStrikes.length }} selected
+          </span>
+        </button>
+        <div
+          class="absolute left-0 top-full z-10 mt-2 max-h-60 w-56 overflow-auto rounded-lg border border-border bg-surface p-2 shadow-xl shadow-[rgba(8,12,21,0.65)]"
+          *ngIf="strikeFilterOpen"
+        >
+          <label class="flex items-center gap-2 px-1 py-1 text-sm text-text">
+            <input
+              type="checkbox"
+              class="h-4 w-4 rounded border-border bg-surface-2 text-accent focus:ring-2 focus:ring-accent/30"
+              [checked]="isAllStrikesSelected()"
+              (change)="toggleAllStrikes($event.target.checked)"
+            />
+            <span>Select all</span>
+          </label>
+          <div class="my-2 h-px bg-border"></div>
+          <label class="flex items-center gap-2 px-1 py-1 text-sm text-text" *ngFor="let strike of strikeFilterOptions">
+            <input
+              type="checkbox"
+              class="h-4 w-4 rounded border-border bg-surface-2 text-accent focus:ring-2 focus:ring-accent/30"
+              [checked]="selectedStrikes.includes(strike)"
+              (change)="toggleStrikeSelection(strike, $event.target.checked)"
+            />
+            <span>{{ strike }}</span>
+          </label>
+        </div>
+      </div>
+      <div class="text-xs text-muted" *ngIf="strikeFilterOptions.length && !selectedStrikes.length">
+        All strikes selected
+      </div>
+      <div class="filter-dropdown" [class.open]="expiryFilterOpen" *ngIf="expiryFilterOptions.length">
+        <button
+          type="button"
+          class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft transition hover:border-accent/60 hover:text-text"
+          (click)="toggleExpiryFilter()"
+        >
+          Expiry
+          <span class="rounded-full bg-accent/20 px-2 py-0.5 text-xs text-accent-strong" *ngIf="selectedExpiries.length">
+            {{ selectedExpiries.length }} selected
+          </span>
+        </button>
+        <div
+          class="absolute left-0 top-full z-10 mt-2 max-h-60 w-56 overflow-auto rounded-lg border border-border bg-surface p-2 shadow-xl shadow-[rgba(8,12,21,0.65)]"
+          *ngIf="expiryFilterOpen"
+        >
+          <label class="flex items-center gap-2 px-1 py-1 text-sm text-text">
+            <input
+              type="checkbox"
+              class="h-4 w-4 rounded border-border bg-surface-2 text-accent focus:ring-2 focus:ring-accent/30"
+              [checked]="isAllExpiriesSelected()"
+              (change)="toggleAllExpiries($event.target.checked)"
+            />
+            <span>Select all</span>
+          </label>
+          <div class="my-2 h-px bg-border"></div>
+          <label class="flex items-center gap-2 px-1 py-1 text-sm text-text" *ngFor="let expiry of expiryFilterOptions">
+            <input
+              type="checkbox"
+              class="h-4 w-4 rounded border-border bg-surface-2 text-accent focus:ring-2 focus:ring-accent/30"
+              [checked]="selectedExpiries.includes(expiry)"
+              (change)="toggleExpirySelection(expiry, $event.target.checked)"
+            />
+            <span>{{ expiry }}</span>
+          </label>
+        </div>
+      </div>
+      <div class="text-xs text-muted" *ngIf="expiryFilterOptions.length && !selectedExpiries.length">
+        All expiries selected
+      </div>
+    </div>
+
+    <div *ngIf="ledgerError" class="state error small">{{ ledgerError }}</div>
+    <div *ngIf="ledgerLoading" class="state small">Loading ledger…</div>
+    <div *ngIf="!ledgerLoading && !ledgerRows.length" class="state small">
+      No ledger rows found for {{ selectedAccountLabel }}.
+    </div>
+
+    <div class="table-wrapper" *ngIf="ledgerRows.length">
+      <div class="totals-block" *ngIf="expiryMonthGroups.length">
+        <h3>Juice by Expiry</h3>
+        <table
+          class="w-full border-collapse text-sm [&_th]:px-2 [&_th]:py-2 [&_td]:px-2 [&_td]:py-2 [&_th]:text-left [&_td]:text-left [&_tbody_tr]:border-b [&_tbody_tr]:border-border [&_tbody_tr:nth-child(even)]:bg-surface-2"
+        >
+          <thead class="text-xs uppercase tracking-wider text-muted">
+            <tr>
+              <th></th>
+              <th>Expiry Month</th>
+              <th>Net Contracts</th>
+              <th>Net Premium</th>
+              <th>Net Juice</th>
+              <th>Net Juice (per 100)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <ng-container *ngFor="let group of expiryMonthGroups">
+              <tr>
+                <td>
+                  <button
+                    type="button"
+                    class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs text-soft transition hover:border-accent/60 hover:text-text"
+                    (click)="toggleExpiryMonth(group.month)"
+                  >
+                    {{ expandedExpiryMonths.has(group.month) ? 'Hide' : 'Show' }}
+                  </button>
+                </td>
+                <td>{{ group.month }}</td>
+                <td>{{ group.netContracts }}</td>
+                <td>{{ group.netPremium | number: '1.2-2' }}</td>
+                <td>{{ group.netJuice | number: '1.2-2' }}</td>
+                <td>{{ group.netJuicePer100 | number: '1.0-0' }}</td>
+              </tr>
+              <tr *ngIf="expandedExpiryMonths.has(group.month)">
+                <td colspan="6">
+                  <div class="table-wrapper rounded-lg border border-border bg-surface-2/40">
+                    <table
+                      class="w-full border-collapse text-xs [&_th]:px-2 [&_th]:py-2 [&_td]:px-2 [&_td]:py-2 [&_th]:text-left [&_td]:text-left [&_tbody_tr]:border-b [&_tbody_tr]:border-border [&_tbody_tr:nth-child(even)]:bg-surface-2"
+                    >
+                      <thead class="text-[0.65rem] uppercase tracking-wider text-muted">
+                        <tr>
+                          <th>Expiration</th>
+                          <th>Net Contracts</th>
+                          <th>Net Premium</th>
+                          <th>Net Juice</th>
+                          <th>Net Juice (per 100)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr *ngFor="let total of group.children">
+                          <td>{{ total.expiry }}</td>
+                          <td>{{ total.netContracts }}</td>
+                          <td>{{ total.netPremium | number: '1.2-2' }}</td>
+                          <td>{{ total.netJuice | number: '1.2-2' }}</td>
+                          <td>{{ total.netJuicePer100 | number: '1.0-0' }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </td>
+              </tr>
+            </ng-container>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="pager">
+        <div class="pager-left">
+          <div>{{ ledgerRangeLabel }}</div>
+          <label class="checkbox">
+            <input
+              type="checkbox"
+              class="h-4 w-4 rounded border-border bg-surface-2 text-accent focus:ring-2 focus:ring-accent/30"
+              [checked]="ledgerOpenOnly"
+              (change)="toggleOpenOnly()"
+            />
+            <span>Show open positions only</span>
+          </label>
+        </div>
+        <div class="pager-controls">
+          <button
+            type="button"
+            class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft transition hover:border-accent/60 hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+            [disabled]="ledgerPage === 1"
+            (click)="prevLedgerPage()"
+          >
+            Prev
+          </button>
+          <span>Page {{ ledgerPage }} / {{ ledgerTotalPages }}</span>
+          <button
+            type="button"
+            class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft transition hover:border-accent/60 hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+            [disabled]="ledgerPage === ledgerTotalPages"
+            (click)="nextLedgerPage()"
+          >
+            Next
+          </button>
+          <label class="page-size">
+            <span>Rows</span>
+            <select
+              class="rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+              [ngModel]="ledgerPageSize"
+              (ngModelChange)="onLedgerPageSizeChange($event)"
+            >
+              <option [ngValue]="10">10</option>
+              <option [ngValue]="20">20</option>
+              <option [ngValue]="50">50</option>
+              <option [ngValue]="100">100</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <table
+        class="w-full border-collapse text-sm [&_th]:px-2 [&_th]:py-2 [&_td]:px-2 [&_td]:py-2 [&_th]:text-left [&_td]:text-left [&_tbody_tr]:border-b [&_tbody_tr]:border-border [&_tbody_tr:nth-child(even)]:bg-surface-2"
+      >
+        <thead class="text-xs uppercase tracking-wider text-muted">
+          <tr>
+            <th></th>
+            <th class="sortable cursor-pointer select-none" (click)="onLedgerSort('ticker', $event)">
+              Ticker <span class="ml-1 text-[0.7em] opacity-70">{{ ledgerSortIndicator('ticker') }}</span>
+            </th>
+            <th class="sortable cursor-pointer select-none" (click)="onLedgerSort('side', $event)">
+              Side <span class="ml-1 text-[0.7em] opacity-70">{{ ledgerSortIndicator('side') }}</span>
+            </th>
+            <th class="sortable cursor-pointer select-none" (click)="onLedgerSort('strike', $event)">
+              Strike <span class="ml-1 text-[0.7em] opacity-70">{{ ledgerSortIndicator('strike') }}</span>
+            </th>
+            <th class="sortable cursor-pointer select-none" (click)="onLedgerSort('expiry', $event)">
+              Expiry <span class="ml-1 text-[0.7em] opacity-70">{{ ledgerSortIndicator('expiry') }}</span>
+            </th>
+            <th class="sortable cursor-pointer select-none" (click)="onLedgerSort('netContracts', $event)">
+              Net Contracts
+              <span class="ml-1 text-[0.7em] opacity-70">{{ ledgerSortIndicator('netContracts') }}</span>
+            </th>
+            <th class="sortable cursor-pointer select-none" (click)="onLedgerSort('netPremium', $event)">
+              Net Premium
+              <span class="ml-1 text-[0.7em] opacity-70">{{ ledgerSortIndicator('netPremium') }}</span>
+            </th>
+            <th class="sortable cursor-pointer select-none" (click)="onLedgerSort('netJuice', $event)">
+              Net Juice <span class="ml-1 text-[0.7em] opacity-70">{{ ledgerSortIndicator('netJuice') }}</span>
+            </th>
+            <th class="sortable cursor-pointer select-none" (click)="onLedgerSort('netJuicePer100', $event)">
+              Net Juice (per 100)
+              <span class="ml-1 text-[0.7em] opacity-70">{{ ledgerSortIndicator('netJuicePer100') }}</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          <ng-container *ngFor="let summary of pagedLedgerSummaries">
+            <tr>
+              <td>
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs text-soft transition hover:border-accent/60 hover:text-text"
+                  (click)="toggleSummary(summary.key)"
+                >
+                  {{ expandedSummaries.has(summary.key) ? 'Hide' : 'Show' }}
+                </button>
+              </td>
+              <td>{{ summary.ticker }}</td>
+              <td>{{ summary.side }}</td>
+              <td>{{ summary.strike || '—' }}</td>
+              <td>{{ summary.expiry || '—' }}</td>
+              <td>{{ summary.netContracts }}</td>
+              <td>{{ summary.netPremium | number: '1.2-2' }}</td>
+              <td>{{ summary.netJuice | number: '1.2-2' }}</td>
+              <td>{{ summary.netJuicePer100 | number: '1.0-0' }}</td>
+            </tr>
+            <tr *ngIf="expandedSummaries.has(summary.key)">
+              <td colspan="9">
+                <div class="table-wrapper rounded-lg border border-border bg-surface-2/40">
+                  <table
+                    class="w-full border-collapse text-xs [&_th]:px-2 [&_th]:py-2 [&_td]:px-2 [&_td]:py-2 [&_th]:text-left [&_td]:text-left [&_tbody_tr]:border-b [&_tbody_tr]:border-border [&_tbody_tr:nth-child(even)]:bg-surface-2"
+                  >
+                    <thead class="text-[0.65rem] uppercase tracking-wider text-muted">
+                      <tr>
+                        <th>Date</th>
+                        <th>Action</th>
+                        <th>Side</th>
+                        <th>Contracts</th>
+                        <th>Premium/Buyback</th>
+                        <th>Underlying</th>
+                        <th>Juice/Contract</th>
+                        <th>Signed Juice ($)</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr *ngFor="let row of summary.rows">
+                        <td>{{ row.date | date: 'medium' }}</td>
+                        <td>{{ row.action || '—' }}</td>
+                        <td>{{ row.side || '—' }}</td>
+                        <td>{{ row.contracts ?? '—' }}</td>
+                        <td>{{ row.premium_buyback ?? '—' }}</td>
+                        <td>{{ row.underlying ?? '—' }}</td>
+                        <td>{{ calculateJuicePerContract(row) ?? '—' }}</td>
+                        <td>{{ calculateSignedJuice(row) ?? '—' }}</td>
+                        <td class="flex gap-2">
+                          <button
+                            type="button"
+                            class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs text-soft transition hover:border-accent/60 hover:text-text"
+                            (click)="startLedgerRowEdit(row)"
+                          >
+                            Edit
+                          </button>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </td>
+            </tr>
+          </ng-container>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>

@@ -1,0 +1,5 @@
+Command,Strategy,Account,Symbol,Side,Action,Contracts,Strike,Expiry,Premium,Buyback,Date,Time,Underlying,UnderlyingClose,Notes
+close,CFM_CC,Christie,NVDA,Call,TO CLOSE,3,172.5,12/12/2025,,11.5,12/10/2025,14:22:55,,,
+open,CFM_CC,Christie,NVDA,Call,TO OPEN,3,178,12/19/2025,8.27,,12/10/2025,14:22:55,,,
+close,JL,Christie,NVDA,Put,TO CLOSE,2,190,12/12/2025,,10.66,12/11/2025,8:32,,,
+open,JL,Christie,NVDA,Put,TO OPEN,2,186,12/19/2025,8.2,,12/11/2025,8:32,,,

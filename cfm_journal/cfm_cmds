@@ -1,0 +1,179 @@
+#!/bin/bash
+# cfm_cmds - Interactive wrapper for CFM trading commands
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CFM_CMDS_SCRIPT="$SCRIPT_DIR/cfm_cmds.sh"
+
+# Source the original cfm_cmds.sh to get the functions
+source "$CFM_CMDS_SCRIPT"
+
+# Function to prompt for input with default value
+prompt_with_default() {
+    local prompt_text="$1"
+    local default_value="$2"
+    local var_name="$3"
+    
+    if [ -n "$default_value" ]; then
+        read -p "$prompt_text [$default_value]: " input
+        eval "$var_name=\${input:-$default_value}"
+    else
+        read -p "$prompt_text: " input
+        eval "$var_name=\"$input\""
+    fi
+}
+
+# Function to display menu
+show_menu() {
+    echo "=========================================="
+    echo "    CFM Trading Commands"
+    echo "=========================================="
+    echo "1. Open Call"
+    echo "2. Close Call"
+    echo "3. Highlight Open Positions"
+    echo "4. Exit"
+    echo "=========================================="
+}
+
+# Function to get common parameters
+get_common_params() {
+    prompt_with_default "Account" "" "ACCOUNT"
+    prompt_with_default "Symbol" "" "SYMBOL"
+    prompt_with_default "Number of Contracts" "" "CONTRACTS"
+    prompt_with_default "Strike Price" "" "STRIKE"
+    prompt_with_default "Expiry Date (YYYY-MM-DD)" "" "EXPIRY"
+}
+
+# Function to open a call
+open_call_interactive() {
+    echo ""
+    echo "=== OPEN CALL ==="
+    get_common_params
+    prompt_with_default "Juice (premium received)" "" "JUICE"
+    
+    echo ""
+    echo "Parameters:"
+    echo "  Account: $ACCOUNT"
+    echo "  Symbol: $SYMBOL"
+    echo "  Contracts: $CONTRACTS"
+    echo "  Strike: $STRIKE"
+    echo "  Expiry: $EXPIRY"
+    echo "  Juice: $JUICE"
+    echo ""
+    
+    read -p "Execute open_call? (y/n): " confirm
+    if [[ $confirm =~ ^[Yy]$ ]]; then
+        open_call "$ACCOUNT" "$SYMBOL" "$CONTRACTS" "$JUICE" "$STRIKE" "$EXPIRY"
+    else
+        echo "Operation cancelled."
+    fi
+}
+
+# Function to close a call
+close_call_interactive() {
+    echo ""
+    echo "=== CLOSE CALL ==="
+    get_common_params
+    prompt_with_default "Juice Buyback (premium paid)" "" "JUICE_BUYBACK"
+    
+    echo ""
+    echo "Parameters:"
+    echo "  Account: $ACCOUNT"
+    echo "  Symbol: $SYMBOL"
+    echo "  Contracts: $CONTRACTS"
+    echo "  Strike: $STRIKE"
+    echo "  Expiry: $EXPIRY"
+    echo "  Juice Buyback: $JUICE_BUYBACK"
+    echo ""
+    
+    read -p "Execute close_call? (y/n): " confirm
+    if [[ $confirm =~ ^[Yy]$ ]]; then
+        close_call "$ACCOUNT" "$SYMBOL" "$CONTRACTS" "$JUICE_BUYBACK" "$STRIKE" "$EXPIRY"
+        read -p "Log a roll (open a new call with the same symbol/contracts)? (y/n): " roll_confirm
+        if [[ $roll_confirm =~ ^[Yy]$ ]]; then
+            roll_call_open_interactive "$ACCOUNT" "$SYMBOL" "$CONTRACTS"
+        fi
+    else
+        echo "Operation cancelled."
+    fi
+}
+
+# Function to log a roll after closing a position
+roll_call_open_interactive() {
+    local ACCOUNT="$1"
+    local SYMBOL="$2"
+    local CONTRACTS="$3"
+
+    echo ""
+    echo "=== ROLL TO NEW CALL ==="
+    prompt_with_default "New Strike Price" "" "ROLL_STRIKE"
+    prompt_with_default "New Expiry Date (YYYY-MM-DD)" "" "ROLL_EXPIRY"
+    prompt_with_default "Juice (premium received for the new short call)" "" "ROLL_JUICE"
+
+    echo ""
+    echo "Roll Parameters:"
+    echo "  Account: $ACCOUNT"
+    echo "  Symbol: $SYMBOL"
+    echo "  Contracts: $CONTRACTS"
+    echo "  New Strike: $ROLL_STRIKE"
+    echo "  New Expiry: $ROLL_EXPIRY"
+    echo "  Juice: $ROLL_JUICE"
+    echo ""
+
+    read -p "Execute open_call for the roll? (y/n): " roll_confirm
+    if [[ $roll_confirm =~ ^[Yy]$ ]]; then
+        open_call "$ACCOUNT" "$SYMBOL" "$CONTRACTS" "$ROLL_JUICE" "$ROLL_STRIKE" "$ROLL_EXPIRY"
+    else
+        echo "Roll logging skipped."
+    fi
+}
+
+# Function to highlight open positions
+highlight_positions_interactive() {
+    echo ""
+    echo "=== HIGHLIGHT OPEN POSITIONS ==="
+    prompt_with_default "Account (Travis/Christie) - leave blank for all" "" "ACCOUNT"
+    
+    echo ""
+    echo "Parameters:"
+    echo "  Account: ${ACCOUNT:-All accounts}"
+    echo ""
+    
+    read -p "Highlight open positions? (y/n): " confirm
+    if [[ $confirm =~ ^[Yy]$ ]]; then
+        if [ -n "$ACCOUNT" ]; then
+            python3 "$PYTHON_SCRIPT" highlight --account "$ACCOUNT"
+        else
+            python3 "$PYTHON_SCRIPT" highlight
+        fi
+    else
+        echo "Operation cancelled."
+    fi
+}
+
+# Main menu loop
+while true; do
+    show_menu
+    read -p "Select option (1-4): " choice
+    
+    case $choice in
+        1)
+            open_call_interactive
+            ;;
+        2)
+            close_call_interactive
+            ;;
+        3)
+            highlight_positions_interactive
+            ;;
+        4)
+            echo "Goodbye!"
+            exit 0
+            ;;
+        *)
+            echo "Invalid option. Please select 1, 2, 3, or 4."
+            ;;
+    esac
+    
+    echo ""
+    read -p "Press Enter to continue..."
+    clear
+done

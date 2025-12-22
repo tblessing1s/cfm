@@ -1,0 +1,1 @@
+"""CFM Juice dashboard package."""

@@ -1,0 +1,215 @@
+.screen {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem 3rem;
+}
+
+header {
+  text-align: center;
+  margin-bottom: 1.5rem;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 2.5rem;
+}
+
+header p {
+  margin: 0.25rem 0 0;
+  color: var(--text-muted);
+}
+
+.entry-card {
+  background: var(--surface);
+  border-radius: 1rem;
+  padding: 1.25rem;
+  box-shadow: 0 18px 30px var(--shadow);
+  margin-bottom: 1.25rem;
+  border: 1px solid var(--border);
+}
+
+.entry-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.entry-header h2 {
+  margin: 0;
+}
+
+.entry-actions {
+  display: inline-flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.entry-grid {
+  display: grid;
+  gap: 0.75rem 1rem;
+  margin-top: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.entry-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+}
+
+.entry-grid .checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+  padding-top: 1.25rem;
+}
+
+.entry-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.entry-hint {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.account-selector {
+  margin-top: 0.75rem;
+  display: inline-flex;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.metrics {
+  display: grid;
+  gap: 1rem;
+}
+
+.account-badge {
+  font-size: 0.95rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.card {
+  background: var(--surface);
+  border-radius: 1rem;
+  padding: 1.25rem;
+  box-shadow: 0 18px 30px var(--shadow);
+}
+
+.card h2 {
+  margin-top: 0;
+}
+
+.card ul,
+.card ol {
+  margin: 0;
+  padding-left: 1rem;
+}
+
+.state {
+  padding: 1rem;
+  text-align: center;
+}
+
+.state.error {
+  color: var(--danger);
+}
+
+.state.success {
+  color: var(--success);
+}
+
+.state.small {
+  font-size: 0.9rem;
+  margin-top: 0.5rem;
+}
+
+.trades-panel {
+  background: var(--surface);
+  border-radius: 1rem;
+  padding: 1.5rem;
+  box-shadow: 0 18px 30px var(--shadow);
+  margin-top: 1.5rem;
+}
+
+.staged-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.table-wrapper {
+  overflow-x: auto;
+}
+
+.json-preview {
+  margin-top: 1rem;
+  background: var(--surface-3);
+  color: var(--text-soft);
+  border-radius: 0.75rem;
+  padding: 0.75rem 1rem;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.85rem;
+  overflow-x: auto;
+}
+
+.pager {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 0.75rem 0;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.ledger-filters {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  margin: 0.75rem 0 0.5rem;
+}
+
+.filter-dropdown {
+  position: relative;
+}
+
+.pager-left {
+  display: inline-flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.pager-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.page-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.totals-block {
+  margin-bottom: 0.75rem;
+}
+
+.totals-block h3 {
+  margin: 0 0 0.35rem;
+}
