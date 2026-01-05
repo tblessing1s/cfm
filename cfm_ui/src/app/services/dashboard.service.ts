@@ -52,6 +52,173 @@ export interface DashboardMetrics {
   total_trades: number;
 }
 
+// Business scoreboard models
+export interface NavSnapshot {
+  account: string;
+  date: string;
+  nav_total: number;
+  nav_cash?: number;
+  nav_long_value?: number;
+  nav_liabilities?: number;
+  deposits?: number;
+  withdrawals?: number;
+}
+
+export interface BasePosition {
+  position_id: string;
+  account: string;
+  symbol: string;
+  strategy: string;
+  base_type: string;
+  opened_date: string;
+  closed_date?: string;
+}
+
+export interface BaseLeg {
+  base_leg_id: string;
+  position_id: string;
+  date: string;
+  time?: string;
+  instrument_type: string;
+  side: string;
+  quantity: number;
+  strike?: number;
+  expiry?: string;
+  price: number;
+  fees?: number;
+  amount: number;
+  tag?: string;
+  condition?: string;
+}
+
+export interface ReserveRow {
+  position_id: string;
+  as_of_date: string;
+  reserved_cash: number;
+  note_or_rule_text?: string;
+}
+
+export interface ReplacementCost {
+  position_id: string;
+  as_of_date: string;
+  replacement_cost_same_size: number;
+  unit_replacement_cost: number;
+  method: string;
+}
+
+export interface PositionMetrics {
+  position: BasePosition;
+  base_value?: number;
+  base_cost?: number;
+  initial_base_cost?: number;
+  base_plus_protection?: number;
+  base_health_delta?: number;
+  net_juice_to_date: number;
+  net_intrinsic_to_date?: number;
+  replacement_cost?: number;
+  unit_replacement_cost?: number;
+  reserve_cash: number;
+  replacement_ratio?: number;
+  base_growth?: number;
+  scale_capacity_units?: number;
+  roll_plan_flag: boolean;
+  roll_action_flag: boolean;
+}
+
+export interface BusinessDashboard {
+  weekly_net_juice: number;
+  monthly_net_juice: number;
+  weekly_juice_yield_pct: number;
+  monthly_juice_yield_pct: number;
+  consistency_profitable_weeks_pct: number;
+  consistency_avg_weekly_juice: number;
+  preservation_ratio?: number;
+  drawdown_pct?: number;
+  reserve_coverage?: number;
+  worst_replacement_ratio?: number;
+  concentration_pct?: number;
+  nav_current?: number;
+  nav_peak?: number;
+  nav_cash?: number;
+  nav_long_value?: number;
+  nav_liabilities?: number;
+  nav_contributed?: number;
+  portfolio_replacement_ratio?: number;
+  distributable_income_weekly?: number;
+  distributable_income_monthly?: number;
+  income_allowed_weekly?: boolean;
+  income_allowed_monthly?: boolean;
+  mode?: string;
+  nav_weekly?: { period_start: string; nav_total: number; nav_cash?: number; nav_long_value?: number; nav_liabilities?: number }[];
+  nav_monthly?: { period_start: string; nav_total: number; nav_cash?: number; nav_long_value?: number; nav_liabilities?: number }[];
+}
+
+export interface PillarSeriesPoint {
+  period_start: string;
+  value: number;
+}
+
+export interface StockSummaryRow {
+  ticker: string;
+  original_base_value?: number;
+  current_base_value?: number;
+  total_protection_collected?: number;
+  base_strength_ratio?: number;
+  base_market_value_change?: number;
+  base_growth_pct?: number;
+  income_total_realized: number;
+  income_rate_weekly?: number;
+  income_rate_monthly?: number;
+  income_efficiency?: number;
+  income_consistency_pct?: number;
+  contribution_income_pct?: number;
+  contribution_protection_pct?: number;
+  contribution_growth_pct?: number;
+}
+
+export interface PortfolioSummary {
+  total_account_value?: number;
+  total_income_realized: number;
+  total_base_strength_ratio?: number;
+  total_base_growth_pct?: number;
+  stocks: StockSummaryRow[];
+}
+
+export interface StockDetail {
+  ticker: string;
+  base_strength_ratio?: number;
+  base_growth_pct?: number;
+  income_total_realized: number;
+  income_efficiency?: number;
+  base_market_value?: number;
+  original_base_value?: number;
+  total_protection_collected?: number;
+  income_series_weekly: PillarSeriesPoint[];
+  base_strength_series_weekly: PillarSeriesPoint[];
+  base_value_series_weekly: PillarSeriesPoint[];
+  positions: PositionMetrics[];
+}
+
+export interface RegimeEntry {
+  date: string;
+  symbol: string;
+  stock_score: number;
+  market_score: number;
+  stock_condition: string;
+  market_condition: string;
+}
+
+export interface ProtectionMetrics {
+  symbol: string;
+  account?: string;
+  target_income: number;
+  latest_cycle_income: number;
+  shortfall: number;
+  defense_cost: number;
+  cumulative_income: number;
+  estimated_break_even_drop?: number;
+}
+
 export interface TradeCreatePayload extends Trade {
   account: string;
 }
@@ -72,8 +239,10 @@ export interface LedgerRow {
   signed_juice_per_100?: number;
   key?: string;
   notes?: string;
+  condition?: string;
   row_number?: number;
   strategy?: string;
+  base_position_id?: string;
 }
 
 export interface LedgerEntryCreate {
@@ -88,6 +257,8 @@ export interface LedgerEntryCreate {
   trade_datetime: string;
   premium: number;
   underlying?: number;
+  condition?: string;
+  base_position_id?: string;
 }
 
 export interface LedgerUpdatePayload {
@@ -102,6 +273,7 @@ export interface LedgerUpdatePayload {
   expiry: string;
   trade_datetime: string;
   premium: number;
+  base_position_id?: string;
 }
 
 @Injectable({
@@ -124,6 +296,77 @@ export class DashboardService {
     return this.http.get<DashboardMetrics>(`${this.baseUrl}/dashboard-metrics`, this._buildRequestOptions(account));
   }
 
+  // Business dashboard
+  getBusinessDashboard(account?: string): Observable<BusinessDashboard> {
+    return this.http.get<BusinessDashboard>(`${this.baseUrl}/business-dashboard`, this._buildRequestOptions(account));
+  }
+
+  listPositionMetrics(account?: string, includeClosed: boolean = false): Observable<PositionMetrics[]> {
+    const options = this._buildRequestOptions(account, includeClosed);
+    return this.http.get<PositionMetrics[]>(`${this.baseUrl}/positions`, options);
+  }
+
+  getPortfolioSummary(account?: string, includeClosed?: boolean): Observable<PortfolioSummary> {
+    return this.http.get<PortfolioSummary>(`${this.baseUrl}/portfolio-summary`, this._buildRequestOptions(account, includeClosed));
+  }
+
+  listStocks(account?: string, includeClosed?: boolean): Observable<StockSummaryRow[]> {
+    return this.http.get<StockSummaryRow[]>(`${this.baseUrl}/stocks`, this._buildRequestOptions(account, includeClosed));
+  }
+
+  getStockDetail(ticker: string, account?: string, includeClosed?: boolean): Observable<StockDetail> {
+    return this.http.get<StockDetail>(`${this.baseUrl}/stocks/${encodeURIComponent(ticker)}`, this._buildRequestOptions(account, includeClosed));
+  }
+
+  createRegimeEntry(payload: RegimeEntry): Observable<RegimeEntry> {
+    return this.http.post<RegimeEntry>(`${this.baseUrl}/regime`, payload);
+    }
+
+  listRegimeEntries(symbol?: string): Observable<RegimeEntry[]> {
+    const options = symbol ? { params: new HttpParams().set('symbol', symbol) } : {};
+    return this.http.get<RegimeEntry[]>(`${this.baseUrl}/regime`, options);
+  }
+
+  getProtectionMetrics(symbol: string, account?: string, targetIncome?: number): Observable<ProtectionMetrics> {
+    let params = new HttpParams().set('symbol', symbol);
+    if (account) params = params.set('account', account);
+    if (targetIncome !== undefined) params = params.set('target_income', targetIncome);
+    return this.http.get<ProtectionMetrics>(`${this.baseUrl}/protection-metrics`, { params });
+  }
+
+  // CRUD helpers
+  createNavSnapshot(payload: NavSnapshot): Observable<NavSnapshot> {
+    return this.http.post<NavSnapshot>(`${this.baseUrl}/nav-snapshots`, payload);
+  }
+
+  createBasePosition(payload: BasePosition): Observable<BasePosition> {
+    return this.http.post<BasePosition>(`${this.baseUrl}/positions`, payload);
+  }
+
+  updateBasePosition(positionId: string, payload: BasePosition): Observable<BasePosition> {
+    return this.http.put<BasePosition>(`${this.baseUrl}/positions/${positionId}`, payload);
+  }
+
+  createBaseLeg(payload: BaseLeg): Observable<BaseLeg> {
+    return this.http.post<BaseLeg>(`${this.baseUrl}/base-legs`, payload);
+  }
+
+  listBaseLegs(positionId?: string): Observable<BaseLeg[]> {
+    let params = new HttpParams();
+    if (positionId) {
+      params = params.set('position_id', positionId);
+    }
+    return this.http.get<BaseLeg[]>(`${this.baseUrl}/base-legs`, { params });
+  }
+
+  createReserve(payload: ReserveRow): Observable<ReserveRow> {
+    return this.http.post<ReserveRow>(`${this.baseUrl}/reserves`, payload);
+  }
+
+  createReplacementCost(payload: ReplacementCost): Observable<ReplacementCost> {
+    return this.http.post<ReplacementCost>(`${this.baseUrl}/replacement-costs`, payload);
+  }
+
   getAccounts(): Observable<AccountOption[]> {
     return this.http.get<AccountOption[]>(`${this.baseUrl}/accounts`);
   }
@@ -144,12 +387,14 @@ export class DashboardService {
     return this.http.put<LedgerRow>(`${this.baseUrl}/ledger/update`, entry);
   }
 
-  private _buildRequestOptions(account?: string) {
-    if (!account) {
-      return {};
+  private _buildRequestOptions(account?: string, includeClosed?: boolean) {
+    let params = new HttpParams();
+    if (account) {
+      params = params.set('account', account);
     }
-
-    const params = new HttpParams().set('account', account);
-    return { params };
+    if (includeClosed) {
+      params = params.set('include_closed', 'true');
+    }
+    return params.keys().length ? { params } : {};
   }
 }

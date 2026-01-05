@@ -225,6 +225,12 @@ def get_ledger_rows(account: Optional[str] = None) -> List[LedgerRow]:
 
 
 def append_ledger_entries(entries: List[LedgerEntryCreate]) -> List[LedgerRow]:
+    # Use direct Excel writer to support base_position_id and avoid CLI dependencies
+    try:
+        appended = excel_loader.append_ledger_entries([entry.model_dump() for entry in entries])
+        return [LedgerRow(**row) for row in appended]
+    except Exception as exc:
+        raise RuntimeError(str(exc))
     base_dir = Path(__file__).resolve().parents[3]
     journal_dir = base_dir / "cfm_journal"
     script_path = journal_dir / "cfm_ledger_autotemplate.py"
@@ -285,6 +291,9 @@ def append_ledger_entries(entries: List[LedgerEntryCreate]) -> List[LedgerRow]:
             else:
                 cmd.append("--auto-price")
                 logger.info(f"  Close position using auto-price feature")
+
+        if entry.condition:
+            cmd.extend(["--condition", entry.condition])
 
         logger.debug(f"Command: {' '.join(cmd)}")
         

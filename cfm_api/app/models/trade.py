@@ -89,7 +89,7 @@ class LedgerRow(BaseModel):
     ticker: str
     contracts: Optional[int]
     strike: Optional[float]
-    expiry: Optional[str]
+    expiry: Optional[str | date]
     premium_buyback: Optional[float]
     underlying: Optional[float]
     juice_per_contract: Optional[float]
@@ -97,7 +97,9 @@ class LedgerRow(BaseModel):
     signed_juice_per_100: Optional[float]
     key: Optional[str]
     notes: Optional[str] = None
+    condition: Optional[str] = None
     row_number: Optional[int] = None
+    base_position_id: Optional[str] = None
 
 
 class LedgerEntryCreate(BaseModel):
@@ -112,6 +114,8 @@ class LedgerEntryCreate(BaseModel):
     trade_datetime: datetime
     premium: float
     underlying: Optional[float] = None
+    condition: Optional[str] = None
+    base_position_id: Optional[str] = None
 
 
 class LedgerUpdate(BaseModel):
@@ -126,3 +130,4 @@ class LedgerUpdate(BaseModel):
     expiry: date
     trade_datetime: datetime
     premium: float
+    base_position_id: Optional[str] = None

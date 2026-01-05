@@ -5,15 +5,22 @@ from dataclasses import dataclass
 import csv
 from pathlib import Path
 from typing import Any, Dict, List, Union
+import shutil
+import json
+import os
+import requests
 
 import numpy as np
 import pandas as pd
 import openpyxl
 
 BASE_DIR = Path(__file__).resolve().parents[3]
-LEDGER_DIR = BASE_DIR / "cfm_journal"
+JOURNAL_ROOT = BASE_DIR / "cfm_journal"
+DATA_DIR = JOURNAL_ROOT / "data"
+ALPHA_CACHE_DIR = JOURNAL_ROOT / "alpha_cache"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 LEDGER_PATTERN = "Juice_Ledger*.xlsx"
-UI_TRADES_FILE = LEDGER_DIR / "ui_trades.csv"
+UI_TRADES_FILE = DATA_DIR / "ui_trades.csv"
 
 
 @dataclass(frozen=True)
@@ -41,18 +48,32 @@ def _friendly_label(stem: str) -> str:
 
 
 def _discover_accounts() -> List[_AccountInfo]:
-    if not LEDGER_DIR.exists():
-        raise FileNotFoundError(f"Ledger directory not found at {LEDGER_DIR}")
+    roots = [DATA_DIR, JOURNAL_ROOT]
+    collected: Dict[str, Path] = {}
+    for root in roots:
+        if not root.exists():
+            continue
+        for path in sorted(root.glob(LEDGER_PATTERN)):
+            if path.stem.lower() in {"juice_ledger"}:
+                continue
+            stem = path.stem.lower()
+            # Prefer DATA_DIR; if legacy exists, move it
+            target = DATA_DIR / path.name
+            if path.parent == JOURNAL_ROOT and not target.exists():
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(path), target)
+                    collected[stem] = target
+                    continue
+                except Exception:
+                    pass
+            if stem not in collected:
+                collected[stem] = target if target.exists() else path
 
-    ledger_paths = [
-        path
-        for path in sorted(LEDGER_DIR.glob(LEDGER_PATTERN))
-        if path.stem.lower() not in {"juice_ledger"}  # skip the template
-    ]
-    if not ledger_paths:
-        raise FileNotFoundError(f"No ledger files found under {LEDGER_DIR}")
+    if not collected:
+        raise FileNotFoundError(f"No ledger files found under {DATA_DIR} or {JOURNAL_ROOT}")
 
-    return [_AccountInfo(name=path.stem, label=_friendly_label(path.stem), path=path) for path in ledger_paths]
+    return [_AccountInfo(name=path.stem, label=_friendly_label(path.stem), path=path) for path in collected.values()]
 
 
 def _resolve_account(account: str | None) -> _AccountInfo:
@@ -78,6 +99,27 @@ def _resolve_account(account: str | None) -> _AccountInfo:
 
 def _normalize_columns(columns: List[str]) -> List[str]:
     return [col.strip().lower().replace(" ", "_") for col in columns]
+
+
+def _composite_key(ticker: str | None, strike: Any, expiry: Any, side: str | None, action: str | None) -> str | None:
+    if not ticker:
+        return None
+    exp_str = ""
+    if expiry:
+        try:
+            exp_str = pd.to_datetime(expiry).strftime("%Y-%m-%d")
+        except Exception:
+            exp_str = str(expiry).split(" ")[0]
+    try:
+        strike_val = float(strike) if strike is not None else None
+    except Exception:
+        strike_val = None
+    strike_str = ""
+    if strike_val is not None:
+        strike_str = str(int(strike_val)) if strike_val.is_integer() else f"{strike_val:.6f}".rstrip("0").rstrip(".")
+    side_part = (side or "CALL").upper()
+    action_part = (action or "OPEN").upper()
+    return f"{str(ticker).upper()}|{strike_str}|{exp_str}|{side_part}|{action_part}"
 
 
 def _serialize_date(value: pd.Timestamp | None) -> str | None:
@@ -283,17 +325,20 @@ def append_ledger_entries(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         descriptor = resolve_account(entry.get("account"))
         wb = openpyxl.load_workbook(descriptor.path)
         ws = wb["Ledger"]
+        _ensure_ledger_headers(ws)
         cols = _get_ledger_columns(ws)
         r = ws.max_row + 1
 
         ticker = str(entry.get("ticker") or "").upper()
-        action = str(entry.get("action") or "Open").capitalize()
+        action = str(entry.get("action") or "Open").strip().upper()
         side = str(entry.get("side") or "Call").capitalize()
         contracts = int(entry.get("contracts"))
         strike = entry.get("strike")
         premium = entry.get("premium")
         underlying = entry.get("underlying")
-        expiry = pd.to_datetime(entry.get("expiry"), errors="coerce").date()
+        # Store expiry as a midnight datetime to keep Excel column typed as datetime
+        expiry_ts = pd.to_datetime(entry.get("expiry"), errors="coerce").normalize()
+        expiry = expiry_ts.to_pydatetime() if expiry_ts is not pd.NaT else None
         trade_dt = pd.to_datetime(entry.get("trade_datetime"), errors="coerce").to_pydatetime()
 
         account_label = descriptor.label
@@ -321,7 +366,17 @@ def append_ledger_entries(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         if "Premium/Buyback" in cols:
             ws.cell(row=r, column=cols["Premium/Buyback"], value=premium)
         if "Underlying" in cols:
+            if underlying in (None, ""):
+                # Attempt to reuse latest underlying for this key if omitted
+                try:
+                    underlying = _latest_underlying(ws, cols, ticker, strike, expiry, side) or _cached_underlying(ticker, expiry, trade_dt)
+                except Exception as exc:
+                    raise ValueError(f"Unable to resolve underlying for {ticker} {strike} {expiry} {side}: {exc}")
+            if underlying in (None, ""):
+                raise ValueError(f"Missing underlying for {ticker} {strike} {expiry} {side}; aborting write")
             ws.cell(row=r, column=cols["Underlying"], value=underlying)
+        if "Base Position Id" in cols:
+            ws.cell(row=r, column=cols["Base Position Id"], value=entry.get("base_position_id"))
         if "Key" in cols:
             ws.cell(row=r, column=cols["Key"], value=key)
         if "Side" in cols:
@@ -338,7 +393,7 @@ def append_ledger_entries(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]
                 "ticker": ticker,
                 "contracts": contracts,
                 "strike": strike,
-                "expiry": expiry.isoformat() if expiry else None,
+        "expiry": expiry.isoformat() if expiry else None,
                 "premium_buyback": premium,
                 "underlying": underlying,
                 "juice_per_contract": None,
@@ -346,6 +401,8 @@ def append_ledger_entries(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]
                 "signed_juice_per_100": None,
                 "key": key,
                 "notes": None,
+                "base_position_id": entry.get("base_position_id"),
+                "row_number": r,
             }
         )
 
@@ -371,14 +428,195 @@ def _get_ledger_columns(ws) -> Dict[str, int]:
         "underlying": "Underlying",
         "key": "Key",
         "side": "Side",
+        "base position id": "Base Position Id",
     }
     return {target: headers[key] for key, target in aliases.items() if key in headers}
+
+
+def _ensure_ledger_headers(ws) -> None:
+    """Ensure legacy ledgers drop Condition and include Base Position Id."""
+    headers = [cell.value for cell in ws[1]]
+    changed = False
+    if "Condition" in headers:
+        idx = headers.index("Condition") + 1
+        ws.delete_cols(idx)
+        headers.pop(idx - 1)
+        changed = True
+    if "Base Position Id" not in headers:
+        ws.cell(row=1, column=len(headers) + 1, value="Base Position Id")
+        changed = True
+    # Caller is responsible for saving the workbook; avoid using ws.parent.filename.
+
+
+def _latest_underlying(ws, cols: Dict[str, int], ticker: str, strike: Any, expiry: Any, side: str) -> Any:
+    """Find the most recent underlying price for matching ticker/strike/expiry/side."""
+    try:
+        ticker_col = cols.get("Symbol")
+        strike_col = cols.get("Strike")
+        expiry_col = cols.get("Expiry")
+        underlying_col = cols.get("Underlying")
+        side_col = cols.get("Side")
+        if not (ticker_col and strike_col and expiry_col and underlying_col):
+            return None
+        target_expiry = _serialize_date(pd.to_datetime(expiry, errors="coerce"))
+        for row in range(ws.max_row, 1, -1):
+            tval = ws.cell(row=row, column=ticker_col).value
+            sval = ws.cell(row=row, column=strike_col).value
+            eval_val = ws.cell(row=row, column=expiry_col).value
+            side_val = ws.cell(row=row, column=side_col).value if side_col else None
+            if (
+                str(tval or "").upper() == ticker
+                and sval == strike
+                and _serialize_date(pd.to_datetime(eval_val, errors="coerce")) == target_expiry
+            ):
+                if side_val and str(side_val).lower() not in str(side or "").lower():
+                    continue
+                return ws.cell(row=row, column=underlying_col).value
+    except Exception:
+        return None
+    return None
+
+
+def _refresh_alpha_cache(ticker: str, expiry: Any) -> None:
+    """Fetch intraday (1min) prices from Alpha Vantage and refresh the cache file for the month."""
+    api_key = os.environ.get("ALPHAVANTAGE_API_KEY")
+    if not api_key:
+        raise RuntimeError("ALPHAVANTAGE_API_KEY not set; cannot refresh alpha cache")
+    try:
+        ticker = ticker.upper()
+        expiry_dt = pd.to_datetime(expiry, errors="coerce")
+        if pd.isna(expiry_dt):
+            return
+        month_str = expiry_dt.strftime("%Y-%m")
+        url = "https://www.alphavantage.co/query"
+        params = {
+            "function": "TIME_SERIES_INTRADAY",
+            "symbol": ticker,
+            "interval": "1min",
+            "outputsize": "full",
+            "apikey": api_key,
+        }
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        payload = resp.json()
+        # Intraday payload key contains interval
+        series = None
+        for key in payload.keys():
+            if key.lower().startswith("time series"):
+                series = payload.get(key)
+                break
+        if series is None:
+            series = {}
+        # Filter to target month; intraday timestamps include time portion
+        filtered = {k: v for k, v in series.items() if str(k).startswith(month_str)}
+        if not filtered:
+            raise RuntimeError("Alpha Vantage returned no data for target month")
+        cache_file = ALPHA_CACHE_DIR / f"{ticker}_{month_str}.json"
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps(filtered, indent=2), encoding="utf-8")
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Alpha Vantage request failed: {exc}") from exc
+    except Exception:
+        raise
+
+
+def _cached_underlying(ticker: str, expiry: Any, trade_dt: Any = None) -> Any:
+    """Attempt to pull the latest underlying from alpha_cache, refreshing if stale."""
+    ticker = ticker.upper()
+    expiry_dt = pd.to_datetime(expiry, errors="coerce")
+    if pd.isna(expiry_dt):
+        return None
+    month_str = expiry_dt.strftime("%Y-%m")
+    fname = f"{ticker}_{month_str}.json"
+    path = ALPHA_CACHE_DIR / fname
+    refresh_needed = not path.exists()
+    data = {}
+    if path.exists():
+        with path.open("r", encoding="utf-8") as f:
+            try:
+                data = json.load(f)
+            except Exception:
+                refresh_needed = True
+    if not isinstance(data, dict):
+        refresh_needed = True
+
+    trade_ts = pd.to_datetime(trade_dt, errors="coerce") if trade_dt is not None else None
+    # Alpha Vantage intraday timestamps are US/Eastern; user inputs are treated as local.
+    # Empirically the feed is ~1 hour ahead of the entered trade time, so bias lookup by +1h.
+    trade_ts_lookup = trade_ts + pd.Timedelta(hours=1) if trade_ts is not None and not pd.isna(trade_ts) else None
+    latest_ts = max(data.keys()) if data else None
+    if latest_ts and trade_ts_lookup is not None:
+        if pd.to_datetime(latest_ts) < trade_ts_lookup:
+            refresh_needed = True
+
+    if refresh_needed:
+        _refresh_alpha_cache(ticker, expiry_dt)
+        if not path.exists():
+            raise RuntimeError(f"Alpha cache refresh failed for {ticker} {month_str}")
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise RuntimeError(f"Alpha cache malformed for {ticker} {month_str}")
+
+    timestamps = sorted(data.keys())
+    if not timestamps:
+        raise RuntimeError(f"No alpha cache data for {ticker} {month_str}")
+
+    chosen_ts = None
+    if trade_ts_lookup is not None:
+        for ts in reversed(timestamps):
+            ts_dt = pd.to_datetime(ts)
+            if ts_dt <= trade_ts_lookup:
+                chosen_ts = ts
+                break
+    if not chosen_ts:
+        chosen_ts = timestamps[-1]
+
+    # If we still could not find a price at or before trade_ts, attempt one more refresh for safety.
+    if trade_ts_lookup is not None:
+        chosen_dt = pd.to_datetime(chosen_ts)
+        if chosen_dt < trade_ts_lookup:
+            _refresh_alpha_cache(ticker, expiry_dt)
+            with path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            timestamps = sorted(data.keys())
+            for ts in reversed(timestamps):
+                ts_dt = pd.to_datetime(ts)
+                if ts_dt <= trade_ts_lookup:
+                    chosen_ts = ts
+                    break
+
+    entry = data.get(chosen_ts, {})
+    # Prefer mid of open/close when available
+    def _to_float(val):
+        try:
+            return float(val)
+        except Exception:
+            return None
+
+    open_val = _to_float(entry.get("1. open") or entry.get("open"))
+    close_val = _to_float(entry.get("4. close") or entry.get("close") or entry.get("price"))
+    high_val = _to_float(entry.get("2. high") or entry.get("high"))
+    low_val = _to_float(entry.get("3. low") or entry.get("low"))
+
+    ohlc = [v for v in (open_val, close_val, high_val, low_val) if v is not None]
+    if len(ohlc) >= 2:
+        return round(sum(ohlc) / len(ohlc), 4)
+    if close_val is not None:
+        return close_val
+    if open_val is not None:
+        return open_val
+
+    raise RuntimeError(f"Alpha cache entry missing open/close price for {ticker} {chosen_ts}")
 
 
 def _build_key(ticker: str, strike: Any, expiry: Any, side: str, action: str) -> str:
     expiry_str = ""
     if hasattr(expiry, "isoformat"):
-        expiry_str = expiry.isoformat()
+        try:
+            expiry_str = expiry.date().isoformat()
+        except Exception:
+            expiry_str = expiry.isoformat()
     elif expiry is not None:
         expiry_str = str(expiry)
     return f"{ticker}|{strike}|{expiry_str}|{side.upper()}|{action.upper()}".upper()
@@ -389,6 +627,7 @@ def update_ledger_row(account: str, row_number: int, data: Dict[str, Any]) -> Di
     descriptor = _resolve_account(account)
     wb = openpyxl.load_workbook(descriptor.path)
     ws = wb["Ledger"]
+    _ensure_ledger_headers(ws)
     cols = _get_ledger_columns(ws)
 
     r = int(row_number)
@@ -406,8 +645,9 @@ def update_ledger_row(account: str, row_number: int, data: Dict[str, Any]) -> Di
         ws.cell(row=r, column=cols["Account"], value=account_label)
     if "Date" in cols:
         ws.cell(row=r, column=cols["Date"], value=data.get("trade_datetime"))
+    action_val = str(data.get("action") or "Open").strip().upper()
     if "Action" in cols:
-        ws.cell(row=r, column=cols["Action"], value=data.get("action"))
+        ws.cell(row=r, column=cols["Action"], value=action_val)
     if "Symbol" in cols:
         ws.cell(row=r, column=cols["Symbol"], value=(data.get("ticker") or "").upper())
     if "Contracts" in cols:
@@ -415,11 +655,30 @@ def update_ledger_row(account: str, row_number: int, data: Dict[str, Any]) -> Di
     if "Strike" in cols:
         ws.cell(row=r, column=cols["Strike"], value=data.get("strike"))
     if "Expiry" in cols:
-        ws.cell(row=r, column=cols["Expiry"], value=data.get("expiry"))
+        expiry_ts = pd.to_datetime(data.get("expiry"), errors="coerce").normalize()
+        expiry_val = expiry_ts.to_pydatetime() if expiry_ts is not pd.NaT else None
+        ws.cell(row=r, column=cols["Expiry"], value=expiry_val)
     if "Premium/Buyback" in cols:
         ws.cell(row=r, column=cols["Premium/Buyback"], value=data.get("premium"))
     if "Underlying" in cols:
-        ws.cell(row=r, column=cols["Underlying"], value=data.get("underlying"))
+        underlying = data.get("underlying")
+        if underlying in (None, ""):
+            try:
+                underlying = _latest_underlying(
+                    ws,
+                    cols,
+                    (data.get("ticker") or "").upper(),
+                    data.get("strike"),
+                    pd.to_datetime(data.get("expiry"), errors="coerce"),
+                    data.get("side"),
+                ) or _cached_underlying((data.get("ticker") or "").upper(), data.get("expiry"), data.get("trade_datetime"))
+            except Exception as exc:
+                raise ValueError(f"Unable to resolve underlying for {data.get('ticker')} {data.get('strike')} {data.get('expiry')} {data.get('side')}: {exc}")
+        if underlying in (None, ""):
+            raise ValueError(f"Missing underlying for {data.get('ticker')} {data.get('strike')} {data.get('expiry')} {data.get('side')}; aborting update")
+        ws.cell(row=r, column=cols["Underlying"], value=underlying)
+    if "Base Position Id" in cols:
+        ws.cell(row=r, column=cols["Base Position Id"], value=data.get("base_position_id"))
     if "Side" in cols:
         ws.cell(row=r, column=cols["Side"], value=data.get("side") or "Call")
     if "Key" in cols:
@@ -442,7 +701,7 @@ def update_ledger_row(account: str, row_number: int, data: Dict[str, Any]) -> Di
         "ticker": (data.get("ticker") or "").upper(),
         "contracts": data.get("contracts"),
         "strike": data.get("strike"),
-        "expiry": data.get("expiry"),
+        "expiry": _serialize_date(pd.to_datetime(data.get("expiry"), errors="coerce")),
         "premium_buyback": data.get("premium"),
         "underlying": data.get("underlying"),
         "juice_per_contract": None,
@@ -451,6 +710,7 @@ def update_ledger_row(account: str, row_number: int, data: Dict[str, Any]) -> Di
         "key": None,
         "notes": None,
         "row_number": r,
+        "base_position_id": data.get("base_position_id"),
     }
     return updated
 
@@ -458,6 +718,15 @@ def update_ledger_row(account: str, row_number: int, data: Dict[str, Any]) -> Di
 def get_ledger_rows(account: str | None = None) -> List[Dict[str, Any]]:
     """Load raw ledger rows from the XLSX for display in the UI."""
     descriptor = _resolve_account(account)
+    # Ensure headers up to date
+    try:
+        wb = openpyxl.load_workbook(descriptor.path)
+        ws = wb["Ledger"]
+        _ensure_ledger_headers(ws)
+        wb.save(descriptor.path)
+    except Exception:
+        pass
+
     df = pd.read_excel(descriptor.path, engine="openpyxl")
     if df.empty:
         return []
@@ -478,19 +747,35 @@ def get_ledger_rows(account: str | None = None) -> List[Dict[str, Any]]:
     rename_map = {
         "symbol": "ticker",
         "premium/buyback": "premium_buyback",
-        "juice/contract": "juice_per_contract",
-        "signed_juice ($)": "signed_juice_dollars",
-        "signed_juice (per 100)": "signed_juice_per_100",
     }
     for src, dest in rename_map.items():
         if src in df.columns:
             df[dest] = df[src]
 
+    numeric_cols = [
+        "contracts",
+        "strike",
+        "premium_buyback",
+        "underlying",
+    ]
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Heuristic fix: if side is blank but a side-like value leaked into signed_juice columns, rescue it.
+    if "side" in df.columns and "signed_juice_dollars" in df.columns:
+        mask = df["side"].isna() & df["signed_juice_dollars"].astype(str).str.lower().isin(["call", "put"])
+        if mask.any():
+            df.loc[mask, "side"] = df.loc[mask, "signed_juice_dollars"]
+            df.loc[mask, "signed_juice_dollars"] = None
+            if "signed_juice_per_100" in df.columns:
+                df.loc[mask, "signed_juice_per_100"] = None
+
     df["account"] = descriptor.name
     if "contracts" in df.columns:
         df["contracts"] = pd.to_numeric(df["contracts"], errors="coerce").astype("Int64")
     if "expiry" in df.columns:
-        df["expiry"] = pd.to_datetime(df["expiry"], errors="coerce").dt.date
+        df["expiry"] = pd.to_datetime(df["expiry"], errors="coerce")
 
     columns = [
         "account",
@@ -503,10 +788,11 @@ def get_ledger_rows(account: str | None = None) -> List[Dict[str, Any]]:
         "expiry",
         "premium_buyback",
         "underlying",
-        "juice_per_contract",
-        "signed_juice_dollars",
-        "signed_juice_per_100",
+        "base_position_id",
+        "notes",
+        "condition",
         "key",
+        "row_number",
     ]
 
     available = [col for col in columns if col in df.columns]
@@ -515,6 +801,47 @@ def get_ledger_rows(account: str | None = None) -> List[Dict[str, Any]]:
     normalized_records: List[Dict[str, Any]] = []
     for record in records:
         normalized: Dict[str, Any] = {col: record.get(col) for col in columns}
+        # Prefer explicit condition column; fall back to notes if absent
+        if not normalized.get("condition"):
+            normalized["condition"] = normalized.get("notes")
+        # Clean non-finite numeric values
+        for col in [
+            "contracts",
+            "strike",
+            "premium_buyback",
+            "underlying",
+        ]:
+            val = normalized.get(col)
+            try:
+                if val is None:
+                    continue
+                if not pd.notna(val) or not np.isfinite(float(val)):
+                    normalized[col] = None
+            except Exception:
+                normalized[col] = None
+        # Recover side if it leaked into juice columns
+        if not normalized.get("side"):
+            for candidate in ["signed_juice_dollars", "signed_juice_per_100", "juice_per_contract"]:
+                val = normalized.get(candidate)
+                if isinstance(val, str) and val.strip().lower() in {"call", "put"}:
+                    normalized["side"] = val.strip().title()
+                    normalized[candidate] = None
+                    break
+        # Compute key if missing
+        if not normalized.get("key"):
+            normalized["key"] = _composite_key(
+                normalized.get("ticker"),
+                normalized.get("strike"),
+                normalized.get("expiry"),
+                normalized.get("side"),
+                normalized.get("action"),
+            )
+        exp_val = normalized.get("expiry")
+        if hasattr(exp_val, "isoformat"):
+            try:
+                normalized["expiry"] = exp_val.date().isoformat() if hasattr(exp_val, "date") else exp_val.isoformat()
+            except Exception:
+                normalized["expiry"] = exp_val.isoformat()
         def r2(val):
             return round(val, 2) if isinstance(val, (int, float)) else val
         contracts_val = normalized.get("contracts")

@@ -856,8 +856,7 @@ def log_cash_event(
     print(f"[OK] Logged {strategy} {action_clean} {side_clean} event for {row['Symbol']} into {csv_dest}")
 HEADERS = [
     "Account","Date","Action","Symbol","Contracts","Strike","Expiry",
-    "Premium/Buyback","Underlying","Juice/Contract","Signed Juice ($)",
-    "Signed Juice (per 100)","Key","Notes","Override Ext","Side"
+    "Premium/Buyback","Underlying","Key","Side","Condition"
 ]
 COLS = {h:i+1 for i,h in enumerate(HEADERS)}
 
@@ -897,14 +896,30 @@ def make_fresh_ledger(path: Path):
     ws.title = "Ledger"
     for i,h in enumerate(HEADERS, start=1):
         ws.cell(row=1, column=i, value=h)
-    # Insert example formulas on row 2 so users can copy down if needed
-    write_formulas(ws, 2)
     wb.save(path)
 
 def ensure_account_workbook(account: str, file_arg: Optional[str]) -> Path:
     # Decide destination path
     dest = Path(file_arg) if file_arg else Path(f"Juice_Ledger_{account}.xlsx")
     if dest.exists():
+        # Upgrade headers in existing workbook to include any new columns (e.g., Condition)
+        try:
+            _ensure_openpyxl()
+            wb = openpyxl.load_workbook(dest)
+            if "Ledger" in wb.sheetnames:
+                ws = wb["Ledger"]
+                # Ensure header row matches HEADERS; append missing headers
+                existing_headers = [ws.cell(row=1, column=i).value for i in range(1, ws.max_column + 1)]
+                missing = [h for h in HEADERS if h not in existing_headers]
+                if missing:
+                    # Place missing headers at the end to avoid shifting data
+                    start_col = ws.max_column + 1
+                    for idx, h in enumerate(missing):
+                        ws.cell(row=1, column=start_col + idx, value=h)
+                    wb.save(dest)
+        except Exception:
+            # If upgrade fails, continue without blocking (append_row will still write headers)
+            pass
         return dest
     # If template exists in CWD, clone it; else build fresh
     template = Path(TEMPLATE_NAME)
@@ -1385,25 +1400,9 @@ def highlight_open_positions(file_path: Path, account: str = None):
     
     return True
 
-    def write_formulas(ws, r: int):
-        _ensure_openpyxl()
-        def C(name): return get_column_letter(COLS[name])
-        ws.cell(row=r, column=COLS["Key"]).value = (
-            f'=UPPER({C("Symbol")}{r}) & "|" & '
-            f'IF({C("Strike")}{r}="","",IF(MOD({C("Strike")}{r},1)=0,TEXT({C("Strike")}{r},"0"),TEXT({C("Strike")}{r},"0.################"))) & "|" & '
-            f'TEXT({C("Expiry")}{r},"yyyy-mm-dd") & "|" & '
-            f'IF({C("Side")}{r}="", "CALL", UPPER({C("Side")}{r})) & "|" & '
-            f'IF({C("Action")}{r}="", "OPEN", UPPER({C("Action")}{r}))'
-        )
-        ws.cell(row=r, column=COLS["Juice/Contract"]).value = (
-            f'=IF(AND({C("Strike")}{r}<>"",{C("Underlying")}{r}<>""),'
-            f'{C("Premium/Buyback")}{r}-MAX(0,{C("Underlying")}{r}-{C("Strike")}{r}),'
-            f'{C("Premium/Buyback")}{r})'
-    )
-    ws.cell(row=r, column=COLS["Signed Juice ($)"]).value = (
-        f'=N({C("Juice/Contract")}{r}) * N({C("Contracts")}{r})'
-    )
-    ws.cell(row=r, column=COLS["Signed Juice (per 100)"]).value = f'={C("Signed Juice ($)")}{r}*100'
+def write_formulas(ws, r: int):
+    # No-op: formulas removed to avoid adding unused columns
+    return
 
 def append_row(path: Path, row: dict):
     _ensure_openpyxl()
@@ -1420,10 +1419,31 @@ def append_row(path: Path, row: dict):
     
     wb = openpyxl.load_workbook(path)
     ws = wb["Ledger"]
+
+    # Ensure required headers (Key, Side, Condition) exist; avoid adding optional ones that could misalign data
+    header_row = [ws.cell(row=1, column=i).value for i in range(1, ws.max_column + 1)]
+    required_headers = ["Key", "Side", "Condition"]
+    for req in required_headers:
+        if req not in header_row:
+            ws.cell(row=1, column=ws.max_column + 1, value=req)
+            header_row = [ws.cell(row=1, column=i).value for i in range(1, ws.max_column + 1)]
+    header_to_col = {h: idx + 1 for idx, h in enumerate(header_row) if h}
+
+    # Compute Key if missing
+    if not row.get("Key"):
+        row["Key"] = composite_key(
+            row.get("Symbol"),
+            row.get("Strike"),
+            row.get("Expiry"),
+            row.get("Side"),
+            row.get("Action"),
+        )
+
     r = next_row(ws)
-    for k,v in row.items():
-        ws.cell(row=r, column=COLS[k], value=v)
-    write_formulas(ws, r)
+    for k, v in row.items():
+        if k in header_to_col:
+            ws.cell(row=r, column=header_to_col[k], value=v)
+    # Formulas for juice are not used; skip to avoid missing-column errors
     
     # Try to save with error handling
     max_retries = 3
@@ -1493,6 +1513,7 @@ def cmd_open(args):
         "Expiry": parse_date(args.expiry) if args.expiry else None,
         "Premium/Buyback": args.premium,
         "Underlying": underlying_price,
+        "Condition": args.condition or "",
         "Notes": args.notes or ""
     }
     row["Key"] = composite_key(
@@ -1570,6 +1591,7 @@ def cmd_close(args):
         "Expiry": parse_date(args.expiry) if args.expiry else None,
         "Premium/Buyback": args.buyback,
         "Underlying": underlying_price,
+        "Condition": args.condition or "",
         "Notes": args.notes or ""
     }
     row["Key"] = key
@@ -2316,6 +2338,7 @@ def build():
     po.add_argument("--underlying", type=float, help="Underlying price (auto-fetched if --auto-price used)")
     po.add_argument("--expiry", help="YYYY-MM-DD or MM/DD/YYYY")
     po.add_argument("--auto-price", action="store_true", help="Auto-fetch underlying price from Yahoo Finance")
+    po.add_argument("--condition", choices=["GREEN","YELLOW","RED"], help="Stock condition at entry (optional)")
     po.add_argument("--notes")
     po.add_argument("--csv-log", help="CSV log file for cash events (defaults to cfm_trades_log.csv)")
     pc = sub.add_parser("close", help="Close short call (append a CLOSE lot)")
@@ -2331,6 +2354,7 @@ def build():
     pc.add_argument("--underlying-close", type=float, help="Underlying at close (auto-fetched if --auto-price used)")
     pc.add_argument("--expiry", required=True, help="Expiry to match the open lot(s)")
     pc.add_argument("--auto-price", action="store_true", help="Auto-fetch underlying price from Yahoo Finance")
+    pc.add_argument("--condition", choices=["GREEN","YELLOW","RED"], help="Stock condition at close (optional)")
     pc.add_argument("--notes")
     pc.add_argument("--csv-log", help="CSV log file for cash events (defaults to cfm_trades_log.csv)")
     pj = sub.add_parser("jl", help="Log Juice Lever cash events to the CSV journal")

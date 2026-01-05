@@ -31,3 +31,41 @@ body {
   background: var(--bg);
   color: var(--text);
 }
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft shadow-sm transition duration-150 hover:-translate-y-0.5 hover:border-accent hover:text-text focus:outline-none focus:ring-2 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  .btn-ghost {
+    @apply bg-transparent border-border text-soft hover:bg-surface-2;
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-accent to-accent-strong px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-[rgba(210,139,87,0.25)] transition duration-150 hover:brightness-110 focus:outline-none focus:ring-2 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  .input-control {
+    @apply w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm transition duration-150 placeholder:text-muted focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent;
+  }
+
+  .filter-trigger {
+    @apply btn bg-surface-2;
+  }
+
+  .chip {
+    @apply rounded-full bg-[var(--accent-soft)] px-2.5 py-0.5 text-xs font-semibold text-accent-strong;
+  }
+
+  .filter-panel {
+    @apply absolute left-0 top-full z-10 mt-2 max-h-64 w-64 overflow-auto rounded-xl border border-border bg-surface p-3 shadow-2xl shadow-[rgba(8,12,21,0.65)] backdrop-blur;
+  }
+
+  .checkbox-row {
+    @apply flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-text transition hover:bg-surface-2;
+  }
+
+  .checkbox-control {
+    @apply h-4 w-4 rounded border border-border bg-surface-2 text-accent focus:ring-2 focus:ring-accent;
+  }
+}

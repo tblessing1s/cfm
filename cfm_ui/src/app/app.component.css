@@ -19,6 +19,225 @@ header p {
   color: var(--text-muted);
 }
 
+.condition-bar {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 1rem;
+}
+
+.cond-chip {
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  display: inline-flex;
+  gap: 0.35rem;
+  align-items: center;
+  cursor: pointer;
+}
+
+.cond-chip .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.cond-chip.green {
+  background: rgba(22, 163, 74, 0.15);
+  color: #22c55e;
+}
+.cond-chip.yellow {
+  background: rgba(245, 158, 11, 0.18);
+  color: #f59e0b;
+}
+.cond-chip.red {
+  background: rgba(239, 68, 68, 0.18);
+  color: #ef4444;
+}
+
+.cond-chip .green {
+  background: #22c55e;
+}
+.cond-chip .yellow {
+  background: #f59e0b;
+}
+.cond-chip .red {
+  background: #ef4444;
+}
+
+.account-summary {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+}
+
+.summary-chip {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 0.75rem 1rem;
+  min-width: 160px;
+}
+
+.chip-label {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.chip-value {
+  font-size: 1.2rem;
+  font-weight: 700;
+}
+
+.nav-chart {
+  margin-top: 1rem;
+  background: var(--surface-2);
+  border-radius: 0.75rem;
+  border: 1px solid var(--border);
+  padding: 0.75rem;
+}
+
+.nav-chart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+}
+
+.nav-chart svg {
+  width: 100%;
+  height: 140px;
+}
+
+.nav-chart .line {
+  fill: none;
+  stroke-width: 2.5;
+  opacity: 0.9;
+}
+
+.nav-chart .line.total {
+  stroke: #2563eb;
+}
+
+.nav-chart .line.cash {
+  stroke: #16a34a;
+}
+
+.nav-chart .line.long {
+  stroke: #f59e0b;
+}
+
+.nav-chart-legend {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.35rem;
+  gap: 0.5rem;
+}
+
+.legend-label {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+.legend-keys {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.legend-key {
+  font-size: 0.85rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+
+.legend-key.total {
+  background: rgba(37, 99, 235, 0.12);
+}
+
+.legend-key.cash {
+  background: rgba(22, 163, 74, 0.12);
+}
+
+.legend-key.long {
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+.dialog {
+  background: var(--surface);
+  border: 2px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 1.25rem;
+  width: min(600px, 90vw);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+
+.dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+.dialog.green {
+  border-color: #22c55e;
+}
+.dialog.yellow {
+  border-color: #f59e0b;
+}
+.dialog.red {
+  border-color: #ef4444;
+}
+
+.accordion {
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+.accordion-row {
+  border-bottom: 1px solid var(--border);
+  padding: 0.5rem 0.75rem;
+}
+.accordion-row:last-child {
+  border-bottom: none;
+}
+.accordion-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+}
+.accordion-body {
+  padding-top: 0.5rem;
+}
+
+.entry-actions.center {
+  justify-content: center;
+}
+
+.nav-axis {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-top: 0.35rem;
+}
+
 .entry-card {
   background: var(--surface);
   border-radius: 1rem;
@@ -46,18 +265,28 @@ header p {
   align-items: center;
 }
 
+.form-actions {
+  margin-top: 0.75rem;
+  gap: 0.75rem;
+}
+
 .entry-grid {
   display: grid;
-  gap: 0.75rem 1rem;
-  margin-top: 0.75rem;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem 1rem;
+  margin-top: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
 }
 
 .entry-grid label {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: 0.4rem;
   font-size: 0.9rem;
+}
+
+.entry-grid label span {
+  color: var(--text-soft);
+  font-weight: 600;
 }
 
 .entry-grid .checkbox {
@@ -212,4 +441,364 @@ header p {
 
 .totals-block h3 {
   margin: 0 0 0.35rem;
+}
+
+.page-nav {
+  display: flex;
+  gap: 0.5rem;
+  margin: 1rem 0;
+  flex-wrap: wrap;
+}
+
+.btn-nav {
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  border-radius: 999px;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+}
+
+.btn-nav.active {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+  box-shadow: 0 8px 20px var(--shadow);
+}
+
+.business-panel h2 {
+  margin: 0 0 0.5rem 0;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+  margin: 0.75rem 0;
+}
+
+.metric-card {
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 0.9rem;
+  background: var(--surface-2);
+}
+
+.metric-label {
+  font-size: 0.85rem;
+  color: var(--text-soft);
+}
+
+.metric-value {
+  font-size: 1.2rem;
+  font-weight: 700;
+}
+
+.metric-sub {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.metric-help {
+  margin-top: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.rules-panel {
+  border: 1px dashed var(--border);
+  border-radius: 0.75rem;
+  padding: 0.75rem;
+  background: var(--surface-2);
+}
+
+.rules-panel ul {
+  margin: 0.25rem 0 0 1.25rem;
+  padding: 0;
+}
+
+.business-forms .form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.form-card {
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 0.75rem;
+  background: var(--surface-2);
+  display: grid;
+  gap: 0.4rem;
+}
+
+.form-card h4 {
+  margin: 0 0 0.25rem 0;
+}
+
+.form-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+}
+
+.data-form-picker {
+  margin-bottom: 0.75rem;
+}
+
+.picker-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.35rem 0;
+}
+
+.help-text {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.help-icon {
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  border-radius: 999px;
+  width: 20px;
+  height: 20px;
+  font-size: 0.75rem;
+  margin-left: 0.35rem;
+  cursor: pointer;
+}
+
+.help-pop {
+  margin-top: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 0.4rem 0.6rem;
+}
+
+.label-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.select-position {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0.5rem 0;
+}
+
+.cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 0.75rem;
+}
+
+.position-card {
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 0.75rem;
+  background: var(--surface-2);
+}
+
+.card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.ticker {
+  font-weight: 700;
+  font-size: 1.2rem;
+}
+
+.meta {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.ratio {
+  padding: 0.35rem 0.6rem;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 0.85rem;
+  background: var(--surface);
+}
+
+.ratio.red {
+  color: #b00020;
+  border: 1px solid #b00020;
+}
+
+.ratio.yellow {
+  color: #b88500;
+  border: 1px solid #b88500;
+}
+
+.ratio.green {
+  color: #0f8a00;
+  border: 1px solid #0f8a00;
+}
+
+.metric-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.95rem;
+  padding: 0.25rem 0;
+}
+
+.badge-green {
+  color: #0f8a00;
+}
+.badge-yellow {
+  color: #b88500;
+}
+.badge-red {
+  color: #b00020;
+}
+.badge-neutral {
+  color: var(--text-muted);
+}
+
+.business-panel h2 {
+  margin: 0 0 0.5rem 0;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+  margin: 0.75rem 0;
+}
+
+.metric-card {
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 0.9rem;
+  background: var(--surface-2);
+}
+
+.metric-label {
+  font-size: 0.85rem;
+  color: var(--text-soft);
+}
+
+.metric-value {
+  font-size: 1.2rem;
+  font-weight: 700;
+}
+
+.metric-sub {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.metric-help {
+  margin-top: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.rules-panel {
+  border: 1px dashed var(--border);
+  border-radius: 0.75rem;
+  padding: 0.75rem;
+  background: var(--surface-2);
+}
+
+.rules-panel ul {
+  margin: 0.25rem 0 0 1.25rem;
+  padding: 0;
+}
+
+.business-forms .form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.form-card {
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 0.75rem;
+  background: var(--surface-2);
+  display: grid;
+  gap: 0.4rem;
+}
+
+.form-card h4 {
+  margin: 0 0 0.25rem 0;
+}
+
+.form-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+}
+
+.cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 0.75rem;
+}
+
+.position-card {
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 0.75rem;
+  background: var(--surface-2);
+}
+
+.card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.ticker {
+  font-weight: 700;
+  font-size: 1.2rem;
+}
+
+.meta {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.ratio {
+  padding: 0.35rem 0.6rem;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 0.85rem;
+  background: var(--surface);
+}
+
+.ratio.red {
+  color: #b00020;
+  border: 1px solid #b00020;
+}
+
+.ratio.yellow {
+  color: #b88500;
+  border: 1px solid #b88500;
+}
+
+.ratio.green {
+  color: #0f8a00;
+  border: 1px solid #0f8a00;
+}
+
+.metric-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.95rem;
+  padding: 0.25rem 0;
 }

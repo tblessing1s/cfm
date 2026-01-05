@@ -6,7 +6,19 @@ import {
   DashboardService,
   LedgerEntryCreate,
   LedgerRow,
+  BusinessDashboard,
+  PositionMetrics,
+  NavSnapshot,
+  BasePosition,
+  BaseLeg,
+  ReserveRow,
+  ReplacementCost,
   Trade,
+  PortfolioSummary,
+  StockSummaryRow,
+  StockDetail,
+  RegimeEntry,
+  ProtectionMetrics,
 } from './services/dashboard.service';
 
 interface LedgerDraft {
@@ -20,6 +32,8 @@ interface LedgerDraft {
   expiry?: string;
   trade_datetime?: string;
   premium?: number;
+  condition?: string;
+  base_position_id?: string;
 }
 
 interface LedgerSummary {
@@ -32,6 +46,7 @@ interface LedgerSummary {
   netPremium: number;
   netJuice: number;
   netJuicePer100: number;
+  netProtection: number;
   rows: LedgerRow[];
 }
 
@@ -41,6 +56,7 @@ interface ExpiryTotal {
   netPremium: number;
   netJuice: number;
   netJuicePer100: number;
+  netProtection: number;
 }
 
 interface ExpiryMonthGroup {
@@ -49,6 +65,7 @@ interface ExpiryMonthGroup {
   netPremium: number;
   netJuice: number;
   netJuicePer100: number;
+  netProtection: number;
   children: ExpiryTotal[];
 }
 
@@ -60,7 +77,67 @@ interface ExpiryMonthGroup {
 export class AppComponent implements OnInit {
   accounts: AccountOption[] = [];
   selectedAccount?: string;
+  activePage: 'business' | 'data' | 'trades' = 'business';
   metrics?: DashboardMetrics;
+  businessMetrics?: BusinessDashboard;
+  portfolioSummary?: PortfolioSummary;
+  stockRows: StockSummaryRow[] = [];
+  selectedStock?: string;
+  stockDetail?: StockDetail;
+  stockDetailLoading = false;
+  positionMetrics: PositionMetrics[] = [];
+  showClosedBases = false;
+  showClosedStocks = false;
+  showAdvanced = false;
+  showRegimeDialog = false;
+  showPlanDialog = false;
+  showRegimeForm = false;
+  selectedTradePositionId?: string;
+  tradeTickerLocked = false;
+  tradeStrategyLocked = false;
+  tradeSideLocked = false;
+   tradeActionLocked = false;
+   tradeStrikeLocked = false;
+   tradeExpiryLocked = false;
+   selectedOpenShortKey?: string;
+   openShortOptions: {
+     key: string;
+     base_position_id?: string | null;
+     ticker?: string | null;
+     side?: string | null;
+     strike?: number | null;
+     expiry?: string | null;
+     remaining: number;
+     label: string;
+   }[] = [];
+   availableOpenShorts: {
+     key: string;
+     base_position_id?: string | null;
+     ticker?: string | null;
+     side?: string | null;
+     strike?: number | null;
+     expiry?: string | null;
+     remaining: number;
+     label: string;
+   }[] = [];
+  currentMarketCondition: 'RED' | 'YELLOW' | 'GREEN' = 'RED';
+  currentStockCondition: 'RED' | 'YELLOW' | 'GREEN' = 'RED';
+  marketConditionDraft: 'RED' | 'YELLOW' | 'GREEN' = 'RED';
+  stockConditionDraft: 'RED' | 'YELLOW' | 'GREEN' | '-' = '-';
+  selectedStockForRegime: string | '-' = '-';
+  latestRegimeBySymbol: Record<string, RegimeEntry> = {};
+  regimeDraft: RegimeEntry = {
+    date: new Date().toISOString().slice(0, 10),
+    symbol: '',
+    stock_score: 0,
+    market_score: 0,
+    stock_condition: 'RED',
+    market_condition: 'RED',
+  };
+  regimeEntries: RegimeEntry[] = [];
+  protection?: ProtectionMetrics;
+  // Single display mode: always show totals and /100 for premium/juice/protection
+  displayMode: 'all_contracts_per100' = 'all_contracts_per100';
   loading = true;
   error?: string;
   trades: Trade[] = [];
@@ -114,6 +191,70 @@ export class AppComponent implements OnInit {
   submitError?: string;
   submitSuccess?: string;
 
+  // Business forms
+  navDraft: NavSnapshot = this.buildBlankNav();
+  navCash?: number;
+  navPositions?: number;
+  navLiabilities?: number;
+  baseDraft: BasePosition = this.buildBlankBase();
+  closingBaseId?: string;
+  baseTypeOptions = ['SHARES', 'LONG_OPTION', 'OTHER'];
+  strategyOptions = ['CFM', 'JL', 'DD', 'OTHER'];
+  baseLegDraft: BaseLeg = this.buildBlankBaseLeg();
+  baseLegOptions: BaseLeg[] = [];
+  selectedBaseLegId: string = '';
+  baseLegDateTime?: string;
+  legSideOptions = ['BUY', 'SELL'];
+  legTagOptions = ['OPEN', 'ROLL_OUT', 'ROLL_IN', 'CLOSE', 'ADD', 'REDUCE', 'MARK'];
+  conditionOptions = ['GREEN', 'YELLOW', 'RED'];
+  tradeConditionOptions = ['GREEN', 'YELLOW', 'RED'];
+  reserveDraft: ReserveRow = this.buildBlankReserve();
+  replacementDraft: ReplacementCost = this.buildBlankReplacement();
+  selectedPositionId?: string;
+  defaultReservePct = 0.05;
+  navChartWidth = 360;
+  navChartHeight = 120;
+  // Targets for coloring
+  weeklyYieldTargetPct = 0.5; // % of NAV
+  monthlyYieldTargetPct = 2.0; // % of NAV
+  selectedDataForm: 'nav' | 'base' | 'leg' = 'nav';
+  dataFormHelp: Record<string, { label: string; when: string }> = {
+    nav: { label: 'Account value snapshot', when: 'Log account net liq (NAV) weekly or daily; include free cash, deposits, withdrawals.' },
+    base: { label: 'Base position', when: 'Create once per engine/symbol before logging base legs or reserves.' },
+    leg: { label: 'Base leg', when: 'Whenever you buy/sell/roll the base (shares/long options).' },
+    reserve: { label: 'Reserve', when: 'When you earmark cash for a base or adjust required reserves.' },
+    replacement: { label: 'Replacement cost', when: 'When you update manual replacement pricing for a base.' },
+  };
+  visibleHelp: string | null = null;
+  fieldHelp: Record<string, string> = {
+    nav_cash: 'Unencumbered cash/buying power you can deploy right now.',
+    nav_positions: 'Mark-to-market value of long holdings only (exclude shorts/credit legs).',
+    nav_liabilities: 'Borrow/margin debits or obligations that reduce net liq.',
+    nav_nav: 'Computed: cash on hand + positions value − liabilities/margin.',
+    nav_deposits: 'New money added since the last snapshot.',
+    nav_withdrawals: 'Cash removed since the last snapshot.',
+    base_symbol: 'Ticker for this base engine (e.g., SPY, AAPL).',
+    base_strategy: 'Label like CFM / JL / DD to tag the engine.',
+    base_type: 'SHARES / LONG_OPTION / OTHER to describe the base.',
+    base_opened: 'When you started this base engine.',
+    base_closed: 'When this base was closed/retired; closed bases are hidden from selection.',
+    leg_position: 'Base position this leg belongs to.',
+    leg_side: 'BUY or SELL for the base leg.',
+    leg_tag: 'OPEN / ROLL_OUT / ROLL_IN / CLOSE / ADD / REDUCE.',
+    leg_price: 'Price paid/received per unit (share or contract) for the base leg.',
+    leg_fees: 'Commissions/fees associated with this base leg.',
+    leg_amount: 'Signed cash flow for the leg (BUY negative, SELL positive).',
+    leg_condition: 'Condition when logging this leg: GREEN (growth OK), YELLOW/RED (stay in cash).',
+    reserve_position: 'Base position this reserve is tied to.',
+    reserve_cash: 'Cash earmarked for this base to cover rolls/assignments.',
+    reserve_note: 'Rule or reason for this reserve.',
+    replacement_position: 'Base position this replacement cost applies to.',
+    replacement_same: 'Cost to rebuild the entire base at current prices.',
+    replacement_unit: 'Cost per unit (share/contract) to rebuild.',
+  };
+  businessError?: string;
+  businessSuccess?: string;
+
   constructor(private dashboardService: DashboardService) {}
 
   ngOnInit(): void {
@@ -127,7 +268,14 @@ export class AppComponent implements OnInit {
           this.tradeDraft.account = this.selectedAccount;
           this.trades = [];
           this.loadMetrics();
+          this.loadPortfolio();
+          this.loadBusiness();
+          this.loadRegimes();
+          if (this.selectedStock) {
+            this.loadProtection(this.selectedStock);
+          }
           this.loadLedger(this.selectedAccount);
+          this.setPage('business');
           return;
         }
 
@@ -139,6 +287,18 @@ export class AppComponent implements OnInit {
         this.error = 'Unable to load account information.';
       },
     });
+  }
+
+  setPage(page: 'business' | 'data' | 'trades'): void {
+    this.activePage = page;
+    if (page === 'business' && this.selectedAccount) {
+      this.loadPortfolio();
+      this.loadBusiness();
+    }
+    if (page === 'trades' && this.selectedAccount) {
+      this.loadMetrics();
+      this.loadLedger(this.selectedAccount);
+    }
   }
 
   loadMetrics(): void {
@@ -156,6 +316,7 @@ export class AppComponent implements OnInit {
         this.loading = false;
         this.loadTrades(this.selectedAccount!);
         this.loadLedger(this.selectedAccount!);
+        this.loadBusiness();
       },
       error: () => {
         this.loading = false;
@@ -179,6 +340,55 @@ export class AppComponent implements OnInit {
     });
   }
 
+  loadPortfolio(): void {
+    if (!this.selectedAccount) {
+      return;
+    }
+    this.dashboardService.getPortfolioSummary(this.selectedAccount, this.showClosedStocks).subscribe({
+      next: (summary) => {
+        this.portfolioSummary = summary;
+        this.stockRows = summary.stocks || [];
+        if (this.selectedStock) {
+          const exists = this.stockRows.some((r) => r.ticker === this.selectedStock);
+          if (!exists) {
+            this.selectedStock = undefined;
+            this.stockDetail = undefined;
+          }
+        }
+      },
+      error: () => {
+        this.portfolioSummary = undefined;
+        this.stockRows = [];
+      },
+    });
+  }
+
+  selectStock(ticker: string): void {
+    this.selectedStock = ticker;
+    if (!ticker || !this.selectedAccount) {
+      this.stockDetail = undefined;
+      return;
+    }
+    this.stockDetailLoading = true;
+    this.dashboardService.getStockDetail(ticker, this.selectedAccount, this.showClosedStocks).subscribe({
+      next: (detail) => {
+        this.stockDetail = detail;
+        this.stockDetailLoading = false;
+        this.loadProtection(ticker);
+        this.loadRegimes();
+      },
+      error: () => {
+        this.stockDetail = undefined;
+        this.stockDetailLoading = false;
+      },
+    });
+  }
+
+  goToTradesForStock(ticker: string): void {
+    this.selectedTickers = ticker ? [ticker] : [];
+    this.setPage('trades');
+  }
+
   loadLedger(account: string): void {
     this.ledgerLoading = true;
     this.ledgerError = undefined;
@@ -187,6 +397,7 @@ export class AppComponent implements OnInit {
         this.ledgerRows = this.sortLedgerRows(rows);
         this.ledgerOpenBalances = this.computeOpenBalances(this.ledgerRows);
         this.ledgerSummaries = this.buildLedgerSummaries(this.ledgerRows);
+        this.refreshOpenShortOptions();
         this.updateLedgerFilterOptions(this.ledgerSummaries);
         this.ledgerPage = 1;
         this.ledgerLoading = false;
@@ -199,6 +410,233 @@ export class AppComponent implements OnInit {
     });
   }
 
+  loadBusiness(): void {
+    if (!this.selectedAccount) {
+      return;
+    }
+    this.dashboardService.getBusinessDashboard(this.selectedAccount).subscribe({
+      next: (data) => {
+        this.businessMetrics = data;
+      },
+      error: () => {
+        this.businessMetrics = undefined;
+      },
+    });
+    this.dashboardService.listPositionMetrics(this.selectedAccount, this.showClosedBases).subscribe({
+      next: (rows) => {
+        this.positionMetrics = this.showClosedBases
+          ? rows
+          : rows.filter((pm) => !pm.position.closed_date);
+        // Ensure selectedPositionId stays valid
+        if (this.selectedPositionId) {
+          const exists = rows.some((pm) => pm.position.position_id === this.selectedPositionId);
+          if (!exists) {
+            this.selectedPositionId = undefined;
+          }
+        }
+        if (this.selectedPositionId) {
+          this.applyReserveDefault(this.selectedPositionId);
+        }
+      },
+      error: () => {
+        this.positionMetrics = [];
+      },
+    });
+  }
+
+  private computeConditions(): void {
+    const scoreMap: Record<string, number> = { GREEN: 3, YELLOW: 2, RED: 1 };
+    this.regimeDraft.stock_score = scoreMap[this.regimeDraft.stock_condition] ?? 0;
+    this.regimeDraft.market_score = scoreMap[this.regimeDraft.market_condition] ?? 0;
+  }
+
+  loadRegimes(): void {
+    this.dashboardService.listRegimeEntries().subscribe({
+      next: (rows) => {
+        this.regimeEntries = rows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        this.updateConditionChips();
+      },
+      error: () => {
+        this.regimeEntries = [];
+        this.updateConditionChips();
+      },
+    });
+  }
+
+  saveRegime(): void {
+    // legacy single-entry save; keep for compatibility
+    this.computeConditions();
+    const payload: RegimeEntry = {
+      ...this.regimeDraft,
+      symbol: (this.regimeDraft.symbol || this.selectedStock || '').toUpperCase(),
+    };
+    this.dashboardService.createRegimeEntry(payload).subscribe({
+      next: (row) => {
+        this.regimeEntries = [row, ...this.regimeEntries];
+        this.updateConditionChips();
+        this.showRegimeDialog = false;
+      },
+    });
+  }
+
+  loadProtection(symbol: string): void {
+    if (!symbol) return;
+    this.dashboardService.getProtectionMetrics(symbol, this.selectedAccount).subscribe({
+      next: (data) => (this.protection = data),
+      error: () => (this.protection = undefined),
+    });
+  }
+
+  onTradePositionSelect(positionId?: string): void {
+    this.selectedTradePositionId = positionId || undefined;
+    if (!positionId) {
+      this.tradeTickerLocked = false;
+      this.tradeStrategyLocked = false;
+      this.tradeSideLocked = false;
+      this.tradeActionLocked = false;
+      this.tradeStrikeLocked = false;
+      this.tradeExpiryLocked = false;
+      this.selectedOpenShortKey = undefined;
+      this.availableOpenShorts = [];
+      this.tradeDraft.side = 'Call';
+      this.tradeDraft.ticker = '';
+      this.tradeDraft.strategy = '';
+      this.tradeDraft.base_position_id = undefined;
+      return;
+    }
+    const pm = this.positionMetrics.find((p) => p.position.position_id === positionId);
+    if (pm) {
+      this.tradeDraft.ticker = pm.position.symbol;
+      this.tradeDraft.strategy = pm.position.strategy || this.tradeDraft.strategy;
+      this.tradeDraft.side = 'Call';
+      this.tradeDraft.base_position_id = pm.position.position_id;
+      this.tradeTickerLocked = true;
+      this.tradeStrategyLocked = true;
+      this.tradeSideLocked = pm.position.strategy === 'CFM';
+      this.tradeActionLocked = false;
+      this.tradeStrikeLocked = false;
+      this.tradeExpiryLocked = false;
+      this.selectedOpenShortKey = undefined;
+      this.updateAvailableOpenShorts();
+    }
+  }
+
+  updateConditionChips(): void {
+    this.latestRegimeBySymbol = {};
+    const MARKET_KEY = '__MARKET__';
+    // Track latest per symbol; blank symbol entries treated as market-level
+    for (const entry of this.regimeEntries) {
+      const sym = (entry.symbol && entry.symbol.trim() ? entry.symbol.toUpperCase() : MARKET_KEY);
+      const existing = this.latestRegimeBySymbol[sym];
+      const existingDate = existing ? new Date(existing.date) : null;
+      const incomingDate = new Date(entry.date);
+      if (!existing || incomingDate > (existingDate as Date)) {
+        this.latestRegimeBySymbol[sym] = entry;
+      }
+    }
+    // Latest market: newest entry whose symbol is empty
+    const marketEntry =
+      this.regimeEntries
+        .filter((r) => !r.symbol || !r.symbol.trim())
+        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0] || this.latestRegimeBySymbol[MARKET_KEY];
+    this.currentMarketCondition = ((marketEntry?.market_condition as any) || 'RED').toUpperCase() as any;
+    const selectedSymbol = (this.selectedStock || '').toUpperCase();
+    const stockEntry = selectedSymbol ? this.latestRegimeBySymbol[selectedSymbol] : undefined;
+    this.currentStockCondition = (stockEntry?.stock_condition as any) || 'RED';
+  }
+
+  openRegimeDialog(): void {
+    this.regimeDraft.symbol = this.selectedStock || '';
+    this.loadRegimes();
+    if (!this.positionMetrics.length && this.selectedAccount) {
+      this.loadBusiness();
+    }
+    this.showRegimeForm = false;
+    this.selectedStockForRegime = '-';
+    this.stockConditionDraft = '-';
+    this.showRegimeDialog = true;
+  }
+
+  closeRegimeDialog(): void {
+    this.showRegimeDialog = false;
+  }
+
+  toggleRegimeForm(show: boolean): void {
+    this.showRegimeForm = show;
+  }
+
+  conditionClass(cond: string): string {
+    const c = (cond || '').toUpperCase();
+    return c === 'GREEN' ? 'green' : c === 'YELLOW' ? 'yellow' : 'red';
+  }
+
+  calcOverallFromConditions(
+    marketCond: 'RED' | 'YELLOW' | 'GREEN',
+    stockCond: 'RED' | 'YELLOW' | 'GREEN'
+  ): 'RED' | 'YELLOW' | 'GREEN' {
+    const m = (marketCond || 'RED').toUpperCase() as any;
+    const s = (stockCond || 'RED').toUpperCase() as any;
+    const combo = new Set([m, s]);
+    if (combo.has('GREEN') && combo.has('RED')) {
+      return 'YELLOW';
+    }
+    if (m === 'RED' || s === 'RED') return 'RED';
+    if (m === 'YELLOW' || s === 'YELLOW') return 'YELLOW';
+    return 'GREEN';
+  }
+
+  overallCondition(): 'RED' | 'YELLOW' | 'GREEN' {
+    return this.calcOverallFromConditions(this.currentMarketCondition, this.currentStockCondition);
+  }
+
+  openPlanDialog(): void {
+    this.showPlanDialog = true;
+  }
+
+  closePlanDialog(): void {
+    this.showPlanDialog = false;
+  }
+
+  onStockSelect(value: string | '-'): void {
+    this.selectedStockForRegime = value || '-';
+    if (this.selectedStockForRegime === '-') {
+      this.stockConditionDraft = '-';
+    }
+  }
+
+  private buildPayload(
+    symbol: string,
+    stockCond: 'RED' | 'YELLOW' | 'GREEN' | '-',
+    marketCond: 'RED' | 'YELLOW' | 'GREEN'
+  ): RegimeEntry {
+    const scoreMap: Record<string, number> = { GREEN: 3, YELLOW: 2, RED: 1 };
+    const sc = stockCond === '-' ? 'RED' : stockCond;
+    return {
+      date: this.regimeDraft.date,
+      symbol,
+      stock_condition: stockCond,
+      market_condition: marketCond,
+      stock_score: scoreMap[sc],
+      market_score: scoreMap[marketCond],
+    };
+  }
+
+  saveCombinedRegime(): void {
+    const symbol = (this.selectedStockForRegime && this.selectedStockForRegime !== '-' ? this.selectedStockForRegime : '') || '';
+    const payload = this.buildPayload(
+      symbol,
+      symbol ? this.stockConditionDraft : '-',
+      this.marketConditionDraft
+    );
+    this.dashboardService.createRegimeEntry(payload).subscribe({
+      next: (row) => {
+        this.regimeEntries = [row, ...this.regimeEntries];
+        this.updateConditionChips();
+        this.showRegimeForm = false;
+      },
+    });
+  }
+
   onAccountChange(accountName: string): void {
     if (accountName === this.selectedAccount) {
       return;
@@ -206,12 +644,21 @@ export class AppComponent implements OnInit {
 
     this.selectedAccount = accountName;
     this.tradeDraft.account = accountName;
+    this.selectedTradePositionId = undefined;
+    this.tradeTickerLocked = false;
+    this.tradeStrategyLocked = false;
     this.selectedTickers = [];
     this.selectedSides = [];
     this.selectedStrikes = [];
     this.selectedExpiries = [];
     this.metrics = undefined;
     this.loadMetrics();
+    this.loadPortfolio();
+    this.loadBusiness();
+    this.loadRegimes();
+    if (this.selectedStock) {
+      this.loadProtection(this.selectedStock);
+    }
     this.loadLedger(accountName);
   }
 
@@ -298,11 +745,331 @@ export class AppComponent implements OnInit {
       strike: strike ?? 0,
       expiry: this.tradeDraft.expiry!,
       premium: premium ?? 0,
+      condition: this.tradeDraft.condition,
+      base_position_id: this.selectedTradePositionId,
     };
 
     this.pendingTrades = [...this.pendingTrades, staged];
     this.entrySuccess = `Staged ${ticker} ${staged.action} for ${account}.`;
     this.tradeDraft = this.buildBlankDraft(account);
+    this.tradeTickerLocked = !!this.selectedTradePositionId;
+    this.tradeStrategyLocked = !!this.selectedTradePositionId;
+    this.tradeSideLocked = this.tradeDraft.strategy === 'CFM' || !!this.selectedTradePositionId;
+    this.tradeActionLocked = false;
+    this.tradeStrikeLocked = false;
+    this.tradeExpiryLocked = false;
+    this.selectedOpenShortKey = undefined;
+    this.updateAvailableOpenShorts();
+  }
+
+  submitNavSnapshot(): void {
+    if (!this.selectedAccount || !this.navDraft.date) {
+      this.businessError = 'Select account and date for NAV snapshot.';
+      return;
+    }
+    this.recomputeNavTotal();
+    this.navDraft.account = this.selectedAccount;
+    this.dashboardService.createNavSnapshot(this.navDraft).subscribe({
+      next: () => {
+        this.businessSuccess = 'Saved NAV snapshot.';
+        this.businessError = undefined;
+        this.navDraft = this.buildBlankNav(this.selectedAccount);
+        this.navCash = undefined;
+        this.navPositions = undefined;
+        this.navLiabilities = undefined;
+        this.loadBusiness();
+      },
+      error: () => {
+        this.businessError = 'Unable to save NAV snapshot.';
+      },
+    });
+  }
+
+  submitBasePosition(): void {
+    if (!this.selectedAccount || !this.baseDraft.symbol) {
+      this.businessError = 'Account and symbol are required for base.';
+      return;
+    }
+    this.baseDraft.account = this.selectedAccount;
+    // If closing an existing base, update it
+    if (this.closingBaseId) {
+      this.dashboardService.updateBasePosition(this.closingBaseId, this.baseDraft).subscribe({
+        next: () => {
+          this.businessSuccess = 'Closed base position.';
+          this.businessError = undefined;
+          this.baseDraft = this.buildBlankBase(this.selectedAccount);
+          this.closingBaseId = undefined;
+          this.loadBusiness();
+        },
+        error: () => {
+          this.businessError = 'Unable to close base position.';
+        },
+      });
+      return;
+    }
+    // Otherwise create new
+    this.dashboardService.createBasePosition(this.baseDraft).subscribe({
+      next: () => {
+        this.businessSuccess = 'Saved base position.';
+        this.businessError = undefined;
+        this.baseDraft = this.buildBlankBase(this.selectedAccount);
+        this.loadBusiness();
+      },
+      error: () => {
+        this.businessError = 'Unable to save base position.';
+      },
+    });
+  }
+
+  submitBaseLeg(): void {
+    const positionId = this.selectedPositionId || this.baseLegDraft.position_id;
+    if (!positionId) {
+      this.businessError = 'Select a base position before adding a base leg.';
+      return;
+    }
+    const payload = { ...this.baseLegDraft, position_id: positionId };
+    this.dashboardService.createBaseLeg(payload).subscribe({
+      next: () => {
+        this.businessSuccess = 'Saved base leg.';
+        this.businessError = undefined;
+        this.baseLegDraft = this.buildBlankBaseLeg();
+        this.baseLegDraft.position_id = positionId;
+        this.loadBaseLegOptions(positionId);
+        this.loadBusiness();
+      },
+      error: () => {
+        this.businessError = 'Unable to save base leg.';
+      },
+    });
+  }
+
+  submitReserve(): void {
+    const positionId = this.selectedPositionId || this.reserveDraft.position_id;
+    if (!positionId) {
+      this.businessError = 'Select a base position before adding a reserve.';
+      return;
+    }
+    const payload = { ...this.reserveDraft, position_id: positionId };
+    this.dashboardService.createReserve(payload).subscribe({
+      next: () => {
+        this.businessSuccess = 'Saved reserve.';
+        this.businessError = undefined;
+        this.reserveDraft = this.buildBlankReserve();
+        this.loadBusiness();
+      },
+      error: () => {
+        this.businessError = 'Unable to save reserve.';
+      },
+    });
+  }
+
+  submitReplacement(): void {
+    const positionId = this.selectedPositionId || this.replacementDraft.position_id;
+    if (!positionId) {
+      this.businessError = 'Select a base position before adding replacement cost.';
+      return;
+    }
+    const payload = { ...this.replacementDraft, position_id: positionId };
+    this.dashboardService.createReplacementCost(payload).subscribe({
+      next: () => {
+        this.businessSuccess = 'Saved replacement cost.';
+        this.businessError = undefined;
+        this.replacementDraft = this.buildBlankReplacement();
+        this.loadBusiness();
+      },
+      error: () => {
+        this.businessError = 'Unable to save replacement cost.';
+      },
+    });
+  }
+
+  setDataForm(form: 'nav' | 'base' | 'leg'): void {
+    this.selectedDataForm = form;
+    if (form === 'leg') {
+      this.loadBaseLegOptions(this.selectedPositionId);
+    }
+  }
+
+  onPositionSelect(positionId: string | undefined): void {
+    this.selectedPositionId = positionId || undefined;
+    const pid = this.selectedPositionId || '';
+    this.baseLegDraft.position_id = pid;
+    this.reserveDraft.position_id = pid;
+    this.replacementDraft.position_id = pid;
+    this.selectedBaseLegId = '';
+    this.baseLegOptions = [];
+    if (this.selectedDataForm === 'leg' && pid) {
+      this.loadBaseLegOptions(pid);
+    }
+    if (pid) {
+      this.applyReserveDefault(pid);
+    }
+  }
+
+  onBaseSelectForClose(positionId: string | undefined): void {
+    if (!positionId) {
+      this.closingBaseId = undefined;
+      this.baseDraft = this.buildBlankBase(this.selectedAccount);
+      return;
+    }
+    this.closingBaseId = positionId;
+    const pm = this.positionMetrics.find((p) => p.position.position_id === positionId);
+    if (pm) {
+      this.baseDraft = {
+        position_id: pm.position.position_id,
+        account: pm.position.account,
+        symbol: pm.position.symbol,
+        strategy: pm.position.strategy,
+        base_type: pm.position.base_type,
+        opened_date: pm.position.opened_date,
+        closed_date: pm.position.closed_date,
+      };
+    }
+  }
+
+  recomputeNavTotal(): void {
+    const cash = this.toNumber(this.navCash);
+    const positions = this.toNumber(this.navPositions);
+    const liabilities = this.toNumber(this.navLiabilities) || 0;
+    if (cash !== undefined || positions !== undefined || liabilities !== undefined) {
+      const total = (cash || 0) + (positions || 0) - liabilities;
+      this.navDraft.nav_total = Math.round(total * 100) / 100;
+      this.navDraft.nav_cash = cash;
+      this.navDraft.nav_long_value = positions;
+      this.navDraft.nav_liabilities = liabilities || undefined;
+    }
+  }
+
+  toggleHelp(key: string): void {
+    this.visibleHelp = this.visibleHelp === key ? null : key;
+  }
+
+  onBaseLegDateTimeChange(value: string): void {
+    this.baseLegDateTime = value;
+    if (value) {
+      const [d, t] = value.split('T');
+      this.baseLegDraft.date = d;
+      this.baseLegDraft.time = t ? t.slice(0, 5) : this.baseLegDraft.time;
+    }
+  }
+
+  recomputeBaseLegAmount(): void {
+    if ((this.baseLegDraft.tag || '').toUpperCase() === 'MARK') {
+      this.baseLegDraft.amount = 0;
+      return;
+    }
+    const qty = this.toNumber(this.baseLegDraft.quantity) || 0;
+    const price = this.toNumber(this.baseLegDraft.price) || 0;
+    const fees = this.toNumber(this.baseLegDraft.fees) || 0;
+    const side = (this.baseLegDraft.side || '').toString().toUpperCase();
+    const gross = price * qty * 100; // scale to total notional (options multiplier)
+    const signed = side === 'SELL' ? gross : -gross;
+    const total = signed - fees;
+    this.baseLegDraft.amount = Math.round(total * 100) / 100;
+  }
+
+  applyReserveDefault(positionId: string): void {
+    const pm = this.positionMetrics.find((p) => p.position.position_id === positionId);
+    if (!pm) {
+      return;
+    }
+    const baseValue = pm.base_value || 0;
+    const suggested = baseValue * this.defaultReservePct;
+    this.reserveDraft.reserved_cash = Math.round(suggested * 100) / 100;
+  }
+
+  rrClass(value?: number | null): string {
+    if (value === undefined || value === null) return 'badge-neutral';
+    if (value >= 1.1) return 'badge-green';
+    if (value >= 1.0) return 'badge-yellow';
+    return 'badge-red';
+  }
+
+  reserveCoverageClass(value?: number | null): string {
+    if (value === undefined || value === null) return 'badge-neutral';
+    if (value >= 1.0) return 'badge-green';
+    if (value >= 0.9) return 'badge-yellow';
+    return 'badge-red';
+  }
+
+  modeClass(mode?: string | null): string {
+    if (!mode) return 'badge-neutral';
+    if (mode === 'SCALE_READY') return 'badge-green';
+    if (mode === 'STRENGTHEN') return 'badge-red';
+    return 'badge-yellow';
+  }
+
+  incomeAllowedClass(allowed?: boolean | null, value?: number | null): string {
+    if (!allowed || !value || value <= 0) return 'badge-red';
+    return 'badge-green';
+  }
+
+  incomeClass(value?: number | null, allowed?: boolean | null): string {
+    if (value === undefined || value === null) return 'badge-neutral';
+    if (allowed && value > 0) return 'badge-green';
+    return 'badge-red';
+  }
+
+  yieldClass(valuePct: number | undefined, target: number): string {
+    if (valuePct === undefined || valuePct === null) return 'badge-neutral';
+    const v = valuePct;
+    if (v >= target) return 'badge-green';
+    if (v >= target * 0.75) return 'badge-yellow';
+    return 'badge-red';
+  }
+
+  navSeriesForChart(): any[] {
+    if (this.businessMetrics?.nav_weekly && this.businessMetrics.nav_weekly.length > 1) {
+      return this.businessMetrics.nav_weekly;
+    }
+    return this.businessMetrics?.nav_monthly || [];
+  }
+
+  navSeriesLabel(): string {
+    if (this.businessMetrics?.nav_weekly && this.businessMetrics.nav_weekly.length > 1) {
+      return 'Weekly';
+    }
+    if (this.businessMetrics?.nav_monthly?.length) {
+      return 'Monthly';
+    }
+    return '';
+  }
+
+  navPath(points: any[] | undefined, key: 'nav_total' | 'nav_cash' | 'nav_long_value'): string {
+    if (!points || points.length < 2) {
+      return '';
+    }
+    const values = points
+      .map((p) => this.toNumber((p as any)[key]))
+      .filter((v) => v !== undefined) as number[];
+    if (values.length < 2) {
+      return '';
+    }
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const range = max - min || 1;
+    const step = points.length > 1 ? this.navChartWidth / (points.length - 1) : this.navChartWidth;
+    let d = '';
+    points.forEach((pt, idx) => {
+      const val = this.toNumber((pt as any)[key]);
+      if (val === undefined) {
+        return;
+      }
+      const x = idx * step;
+      const y = this.navChartHeight - ((val - min) / range) * this.navChartHeight;
+      d += `${d ? ' L ' : 'M '}${x.toFixed(1)} ${y.toFixed(1)}`;
+    });
+    return d;
+  }
+
+  navStartLabel(): string {
+    const series = this.navSeriesForChart();
+    return series.length ? series[0]?.period_start : '';
+  }
+
+  navEndLabel(): string {
+    const series = this.navSeriesForChart();
+    return series.length ? series[series.length - 1]?.period_start : '';
   }
 
   removeStagedTrade(index: number): void {
@@ -348,6 +1115,10 @@ export class AppComponent implements OnInit {
 
     this.editingLedgerRowNumber = row.row_number;
     this.editingLedgerAccount = row.account;
+    this.tradeActionLocked = false;
+    this.tradeStrikeLocked = false;
+    this.tradeExpiryLocked = false;
+    this.selectedOpenShortKey = undefined;
 
     const actionClean = (row.action || 'Open').toString().toLowerCase();
     const action: 'Open' | 'Close' = actionClean.includes('close') ? 'Close' : 'Open';
@@ -365,7 +1136,20 @@ export class AppComponent implements OnInit {
       strike: row.strike ?? undefined,
       expiry: row.expiry ?? undefined,
       premium: row.premium_buyback ?? undefined,
+      condition: row.condition || row.notes || undefined,
+      base_position_id: row.base_position_id,
     };
+    if (row.base_position_id) {
+      this.selectedTradePositionId = row.base_position_id;
+      this.tradeTickerLocked = true;
+      this.tradeStrategyLocked = true;
+      this.tradeSideLocked = this.tradeDraft.strategy === 'CFM';
+    } else {
+      this.selectedTradePositionId = undefined;
+      this.tradeTickerLocked = false;
+      this.tradeStrategyLocked = false;
+      this.tradeSideLocked = false;
+    }
     this.enforceSideForStrategy(this.tradeDraft);
     this.entrySuccess = `Editing ledger row ${row.row_number} (${row.ticker}).`;
     this.submitError = undefined;
@@ -426,6 +1210,7 @@ export class AppComponent implements OnInit {
       strike: strike ?? 0,
       expiry: this.tradeDraft.expiry!,
       premium: premium ?? 0,
+      base_position_id: this.selectedTradePositionId,
     };
 
     this.submitLoading = true;
@@ -472,6 +1257,15 @@ export class AppComponent implements OnInit {
     this.enforceSideForStrategy();
     this.entryError = undefined;
     this.entrySuccess = undefined;
+    this.selectedTradePositionId = undefined;
+    this.tradeTickerLocked = false;
+    this.tradeStrategyLocked = false;
+    this.tradeSideLocked = false;
+    this.tradeActionLocked = false;
+    this.tradeStrikeLocked = false;
+    this.tradeExpiryLocked = false;
+    this.selectedOpenShortKey = undefined;
+    this.updateAvailableOpenShorts();
   }
 
   normalizeTicker(): void {
@@ -503,6 +1297,7 @@ export class AppComponent implements OnInit {
           netPremium: 0,
           netJuice: 0,
           netJuicePer100: 0,
+          netProtection: 0,
           children: [],
         };
       }
@@ -511,12 +1306,14 @@ export class AppComponent implements OnInit {
       bucket.netContracts += total.netContracts;
       bucket.netPremium += total.netPremium;
       bucket.netJuice += total.netJuice;
+      bucket.netProtection += total.netProtection;
     });
 
     return Object.values(groups)
       .map((group) => ({
         ...group,
         netJuicePer100: group.netJuice * 100,
+        netProtection: this.roundTo2(group.netProtection),
         children: group.children.sort((a, b) => b.expiry.localeCompare(a.expiry)),
       }))
       .sort((a, b) => {
@@ -835,9 +1632,145 @@ export class AppComponent implements OnInit {
       strike: undefined,
       expiry: undefined,
       premium: undefined,
+      condition: undefined,
+      base_position_id: undefined,
     };
     this.enforceSideForStrategy(draft);
     return draft;
+  }
+
+  private buildBlankNav(account?: string): NavSnapshot {
+    const today = new Date().toISOString().slice(0, 10);
+    return {
+      account: account || '',
+      date: today,
+      nav_cash: undefined,
+      nav_long_value: undefined,
+      nav_liabilities: undefined,
+      nav_total: 0,
+      deposits: 0,
+      withdrawals: 0,
+    };
+  }
+
+  private buildBlankBase(account?: string): BasePosition {
+    const today = new Date().toISOString().slice(0, 10);
+    return {
+      position_id: '',
+      account: account || '',
+      symbol: '',
+      strategy: 'CFM',
+      base_type: 'SHARES',
+      opened_date: today,
+      closed_date: undefined,
+    };
+  }
+
+  private buildBlankBaseLeg(): BaseLeg {
+    const today = new Date().toISOString().slice(0, 10);
+    this.baseLegDateTime = `${today}T09:30`;
+    return {
+      base_leg_id: this.newId(),
+      position_id: '',
+      date: today,
+      time: '09:30',
+      instrument_type: 'SHARES',
+      side: 'BUY',
+      quantity: 0,
+      strike: undefined,
+      expiry: undefined,
+      price: 0,
+      fees: 0,
+      amount: 0,
+      tag: 'OPEN',
+      condition: undefined,
+    };
+  }
+
+  private newId(): string {
+    if ((crypto as any)?.randomUUID) {
+      return (crypto as any).randomUUID();
+    }
+    return 'leg-' + Math.random().toString(36).slice(2, 10);
+  }
+
+  loadBaseLegOptions(positionId?: string): void {
+    if (!positionId) {
+      this.baseLegOptions = [];
+      return;
+    }
+    this.dashboardService.listBaseLegs(positionId).subscribe({
+      next: (legs) => {
+        // If the net open quantity for a base_leg_id is zero or negative (fully closed), hide it.
+        const netById = new Map<string, number>();
+        legs.forEach((leg) => {
+          const id = leg.base_leg_id || '';
+          if (!id) return;
+          const tag = (leg.tag || '').toString().toUpperCase();
+          const qty = Number(leg.quantity || 0);
+          const current = netById.get(id) || 0;
+          const delta = tag === 'CLOSE' ? -qty : qty;
+          netById.set(id, current + delta);
+        });
+        const closedIds = new Set(
+          Array.from(netById.entries())
+            .filter(([_, net]) => !isFinite(net) || net <= 0)
+            .map(([id]) => id)
+        );
+        this.baseLegOptions = legs.filter(
+          (leg) =>
+            (leg.tag || '').toString().toUpperCase() !== 'CLOSE' &&
+            !closedIds.has(leg.base_leg_id)
+        );
+      },
+      error: () => {
+        this.baseLegOptions = [];
+      },
+    });
+  }
+
+  onBaseLegSelect(legId: string): void {
+    this.selectedBaseLegId = legId;
+    if (!legId) {
+      this.baseLegDraft = this.buildBlankBaseLeg();
+      this.baseLegDraft.position_id = this.selectedPositionId || '';
+      return;
+    }
+    const leg = this.baseLegOptions.find((l) => l.base_leg_id === legId);
+    if (!leg) {
+      return;
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    this.baseLegDraft = {
+      ...leg,
+      date: today,
+      time: '09:30',
+      tag: 'MARK',
+      amount: 0,
+      fees: leg.fees ?? 0,
+    };
+    this.baseLegDateTime = `${today}T09:30`;
+  }
+
+  private buildBlankReserve(): ReserveRow {
+    const today = new Date().toISOString().slice(0, 10);
+    return {
+      position_id: '',
+      as_of_date: today,
+      reserved_cash: 0,
+      note_or_rule_text: '',
+    };
+  }
+
+  private buildBlankReplacement(): ReplacementCost {
+    const today = new Date().toISOString().slice(0, 10);
+    return {
+      position_id: '',
+      as_of_date: today,
+      replacement_cost_same_size: 0,
+      unit_replacement_cost: 0,
+      method: 'MANUAL',
+    };
   }
 
   private toNumber(value: number | string | undefined): number | undefined {
@@ -961,7 +1894,7 @@ export class AppComponent implements OnInit {
     return trimmed || '—';
   }
 
-  calculateJuicePerContract(row: LedgerRow): number | null {
+  private calculateJuicePerContractRaw(row: LedgerRow): number | null {
     const premium = this.toNumber(row.premium_buyback);
     if (premium === undefined) {
       return null;
@@ -985,8 +1918,16 @@ export class AppComponent implements OnInit {
     return this.roundTo2(juice);
   }
 
-  calculateSignedJuice(row: LedgerRow): number | null {
-    const perContract = this.calculateJuicePerContract(row);
+  calculateJuicePerContract(row: LedgerRow): number | null {
+    const raw = this.calculateJuicePerContractRaw(row);
+    if (raw === null) {
+      return null;
+    }
+    return this.roundTo2(Math.abs(raw));
+  }
+
+  private calculateSignedJuiceRaw(row: LedgerRow): number | null {
+    const perContract = this.calculateJuicePerContractRaw(row);
     if (perContract === null) {
       return null;
     }
@@ -997,12 +1938,103 @@ export class AppComponent implements OnInit {
     return this.roundTo2(perContract * contracts);
   }
 
+  calculateSignedJuice(row: LedgerRow): number | null {
+    const raw = this.calculateSignedJuiceRaw(row);
+    if (raw === null) {
+      return null;
+    }
+    return this.roundTo2(Math.abs(raw));
+  }
+
   calculateSignedJuicePer100(row: LedgerRow): number | null {
-    const signed = this.calculateSignedJuice(row);
+    const signed = this.calculateSignedJuiceRaw(row);
     if (signed === null) {
       return null;
     }
     return this.roundTo2(signed * 100);
+  }
+
+  private calculateProtectionRaw(row: LedgerRow): number | null {
+    const juiceRaw = this.calculateSignedJuiceRaw(row);
+    const premium = this.toNumber(row.premium_buyback);
+    const contracts = this.toNumber(row.contracts) ?? 0;
+    if (juiceRaw === null || premium === undefined) {
+      return null;
+    }
+    const juiceAbs = Math.abs(juiceRaw);
+    const premiumTotal = premium * contracts;
+    const action = (row.action || '').toString().toLowerCase();
+    const isClose = action.includes('close');
+    const protection = juiceAbs - premiumTotal;
+    return this.roundTo2(isClose ? -protection : protection);
+  }
+
+  calculateProtection(row: LedgerRow): number | null {
+    const raw = this.calculateProtectionRaw(row);
+    if (raw === null) {
+      return null;
+    }
+    return this.roundTo2(Math.abs(raw));
+  }
+
+  private formatNumber(value: number | null | undefined, digits: string = '1.2-2'): string {
+    if (value === null || value === undefined || isNaN(value as number)) {
+      return '—';
+    }
+    return (value as number).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  private formatDisplay(perContract: number | null, total: number | null, _mode?: string): string {
+    const tot = total ?? null;
+    return `${this.formatNumber(tot)} | ${this.formatNumber(tot !== null ? tot * 100 : null)}`;
+  }
+
+  formatDetailValue(kind: 'premium' | 'juice' | 'protection', row: LedgerRow): string {
+    const contracts = this.toNumber(row.contracts) ?? 0;
+    if (kind === 'premium') {
+      const per = this.toNumber(row.premium_buyback) ?? null;
+      const total = per !== null ? per * contracts : null;
+      return this.formatDisplay(per, total, this.displayMode);
+    }
+    if (kind === 'juice') {
+      const per = this.calculateJuicePerContract(row);
+      const total = this.calculateSignedJuiceRaw(row);
+      return this.formatDisplay(per, total !== null ? Math.abs(total) : null, this.displayMode);
+    }
+    // protection
+    const protRaw = this.calculateProtectionRaw(row);
+    const totalProt = protRaw !== null ? Math.abs(protRaw) : null;
+    const perProt = contracts ? (totalProt !== null ? totalProt / Math.abs(contracts) : null) : totalProt;
+    return this.formatDisplay(perProt, totalProt, this.displayMode);
+  }
+
+  formatSummaryValue(kind: 'premium' | 'juice' | 'protection', summary: LedgerSummary): string {
+    const contracts = summary.netContracts || 0;
+    if (kind === 'premium') {
+      const per = contracts !== 0 ? summary.netPremium / contracts : null;
+      return this.formatDisplay(per, summary.netPremium, this.displayMode);
+    }
+    if (kind === 'juice') {
+      const per = contracts !== 0 ? summary.netJuice / contracts : null;
+      return this.formatDisplay(per, summary.netJuice, this.displayMode);
+    }
+    const perProt = contracts !== 0 ? summary.netProtection / contracts : null;
+    return this.formatDisplay(perProt, summary.netProtection, this.displayMode);
+  }
+
+  // Fixed formatter for Juice by Expiry: always show All contracts + /100
+  formatSummaryAllPer100(kind: 'premium' | 'juice' | 'protection', summary: LedgerSummary): string {
+    const contracts = summary.netContracts || 0;
+    if (kind === 'premium') {
+      const per = contracts !== 0 ? summary.netPremium / contracts : null;
+      return this.formatDisplay(per, summary.netPremium, 'all_contracts_per100');
+    }
+    if (kind === 'juice') {
+      const per = contracts !== 0 ? summary.netJuice / contracts : null;
+      return this.formatDisplay(per, summary.netJuice, 'all_contracts_per100');
+    }
+    const perProt = contracts !== 0 ? summary.netProtection / contracts : null;
+    return this.formatDisplay(perProt, summary.netProtection, 'all_contracts_per100');
   }
 
   private roundTo2(value: number): number {
@@ -1078,6 +2110,75 @@ export class AppComponent implements OnInit {
     return balances;
   }
 
+  private refreshOpenShortOptions(): void {
+    const options: {
+      key: string;
+      base_position_id?: string | null;
+      ticker?: string | null;
+      side?: string | null;
+      strike?: number | null;
+      expiry?: string | null;
+      remaining: number;
+      label: string;
+    }[] = [];
+    Object.entries(this.computeOpenBalances(this.ledgerRows)).forEach(([key, info]) => {
+      const remaining = info.remaining ?? 0;
+      const row = info.row;
+      if (remaining > 0 && row) {
+        const label = `${(row.ticker || '').toUpperCase()} ${row.side || ''} ${row.strike ?? ''} ${
+          row.expiry || '—'
+        } · open ${remaining}`;
+        options.push({
+          key,
+          base_position_id: row.base_position_id,
+          ticker: row.ticker,
+          side: row.side,
+          strike: row.strike as any,
+          expiry: row.expiry as any,
+          remaining,
+          label,
+        });
+      }
+    });
+    this.openShortOptions = options;
+    this.updateAvailableOpenShorts();
+  }
+
+  private updateAvailableOpenShorts(): void {
+    const baseId = this.selectedTradePositionId || this.tradeDraft?.base_position_id;
+    this.availableOpenShorts = baseId
+      ? this.openShortOptions.filter((opt) => opt.base_position_id === baseId)
+      : [];
+    if (!this.availableOpenShorts.some((opt) => opt.key === this.selectedOpenShortKey)) {
+      this.selectedOpenShortKey = undefined;
+      this.tradeActionLocked = false;
+      this.tradeStrikeLocked = false;
+      this.tradeExpiryLocked = false;
+    }
+  }
+
+  onOpenShortSelect(key?: string): void {
+    this.selectedOpenShortKey = key || undefined;
+    this.tradeActionLocked = false;
+    this.tradeStrikeLocked = false;
+    this.tradeExpiryLocked = false;
+    if (!key) {
+      return;
+    }
+    const opt = this.availableOpenShorts.find((o) => o.key === key);
+    if (!opt) {
+      return;
+    }
+    this.tradeDraft.action = 'Close';
+    this.tradeActionLocked = true;
+    this.tradeDraft.strike = opt.strike ?? this.tradeDraft.strike;
+    this.tradeStrikeLocked = opt.strike !== undefined && opt.strike !== null;
+    this.tradeDraft.expiry = opt.expiry ?? this.tradeDraft.expiry;
+    this.tradeExpiryLocked = !!opt.expiry;
+    this.tradeDraft.contracts = opt.remaining ?? this.tradeDraft.contracts;
+    // Keep ticker/strategy/side from base position locks already applied.
+  }
+
   private extractBaseKey(row: LedgerRow): string | null {
     if (row.key) {
       const parts = row.key.split('|');
@@ -1100,12 +2201,12 @@ export class AppComponent implements OnInit {
         return;
       }
 
-      const existing = groups[baseKey];
       const action = (row.action || '').toLowerCase();
       const isClose = action.includes('close');
       const contracts = Number(row.contracts || 0);
       const premium = Number(row.premium_buyback || 0);
-      const signedJuice = this.calculateSignedJuice(row) ?? 0;
+      const signedJuiceRaw = this.calculateSignedJuiceRaw(row) ?? 0;
+      const protectionRaw = this.calculateProtectionRaw(row) ?? 0;
 
       if (!groups[baseKey]) {
         groups[baseKey] = {
@@ -1118,23 +2219,29 @@ export class AppComponent implements OnInit {
           netPremium: 0,
           netJuice: 0,
           netJuicePer100: 0,
+          netProtection: 0,
           rows: [],
         };
       }
 
       const summary = groups[baseKey];
       const contractDelta = isClose ? -contracts : contracts;
-      const premiumDelta = isClose ? -premium : premium;
+      const premiumTotal = premium * contracts;
+      const premiumDelta = isClose ? -premiumTotal : premiumTotal;
+      const protectionDelta = isClose ? -Math.abs(protectionRaw) : Math.abs(protectionRaw);
+      const juiceDelta = signedJuiceRaw;
 
       summary.netContracts += contractDelta;
       summary.netPremium += premiumDelta;
-      summary.netJuice += signedJuice;
+      summary.netJuice += juiceDelta;
+      summary.netProtection += protectionDelta;
       summary.rows.push(row);
     });
 
     Object.values(groups).forEach((summary) => {
       summary.netJuice = this.roundTo2(summary.netJuice);
       summary.netPremium = this.roundTo2(summary.netPremium);
+      summary.netProtection = this.roundTo2(summary.netProtection);
       summary.netJuicePer100 = this.roundTo2(summary.netJuice * 100);
     });
 
@@ -1157,18 +2264,21 @@ export class AppComponent implements OnInit {
           netPremium: 0,
           netJuice: 0,
           netJuicePer100: 0,
+          netProtection: 0,
         };
       }
       const bucket = grouped[key];
       bucket.netContracts += summary.netContracts;
       bucket.netPremium += summary.netPremium;
       bucket.netJuice += summary.netJuice;
+      bucket.netProtection += summary.netProtection;
     });
 
     return Object.values(grouped)
       .map((item) => ({
         ...item,
         netJuicePer100: item.netJuice * 100,
+        netProtection: this.roundTo2(item.netProtection),
       }))
       .sort((a, b) => {
         if (a.expiry === '—') return 1;

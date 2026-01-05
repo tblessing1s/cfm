@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .app.routers.trades_router import router as trades_router
+from .app.routers.business_router import router as business_router
 import importlib
 import logging
 
@@ -33,3 +34,4 @@ app.add_middleware(
 )
 
 app.include_router(trades_router, prefix="/api")
+app.include_router(business_router, prefix="/api")

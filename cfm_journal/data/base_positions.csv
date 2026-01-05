@@ -1,0 +1,4 @@
+position_id,account,symbol,strategy,base_type,opened_date,closed_date
+bbf8aa7428f749539297166b6f151cae,Juice_Ledger_Christie,NFLX,CFM,LONG_OPTION,2025-12-17,2025-12-23
+ffd625529d494de7a4481102e2be47fb,Juice_Ledger_Christie,NVDA,CFM,LONG_OPTION,2025-12-29,
+2cd0c5e468b54173be3aa830edbde00d,Juice_Ledger_Christie,ABNB,CFM,LONG_OPTION,2025-12-17,
