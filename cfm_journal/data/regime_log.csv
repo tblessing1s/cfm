@@ -3,3 +3,5 @@ date,symbol,stock_score,market_score,stock_condition,market_condition
 2026-01-01,NVDA,3,3,GREEN,GREEN
 2026-01-02,ABNB,2,3,YELLOW,GREEN
 2026-01-02,NVDA,3,3,GREEN,GREEN
+2026-01-05,NVDA,3,3,GREEN,GREEN
+2026-01-05,ABNB,2,3,YELLOW,GREEN

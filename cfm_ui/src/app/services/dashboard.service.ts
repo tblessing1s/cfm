@@ -167,6 +167,10 @@ export interface StockSummaryRow {
   base_market_value_change?: number;
   base_growth_pct?: number;
   income_total_realized: number;
+   income_after_protection?: number;
+   protection_gap?: number;
+   protection_juice_applied?: number;
+   juice_needed_for_protection?: number;
   income_rate_weekly?: number;
   income_rate_monthly?: number;
   income_efficiency?: number;
@@ -178,7 +182,15 @@ export interface StockSummaryRow {
 
 export interface PortfolioSummary {
   total_account_value?: number;
+  total_cash?: number;
+  total_base_value_initial?: number;
+  total_current_base_value?: number;
+  total_protection_collected?: number;
+  total_base_plus_protection?: number;
   total_income_realized: number;
+  total_income_after_protection?: number;
+  total_protection_gap?: number;
+  total_juice_needed_for_protection?: number;
   total_base_strength_ratio?: number;
   total_base_growth_pct?: number;
   stocks: StockSummaryRow[];
@@ -189,10 +201,14 @@ export interface StockDetail {
   base_strength_ratio?: number;
   base_growth_pct?: number;
   income_total_realized: number;
+  income_after_protection?: number;
   income_efficiency?: number;
   base_market_value?: number;
   original_base_value?: number;
+  base_plus_protection?: number;
   total_protection_collected?: number;
+  protection_gap?: number;
+  net_juice_total?: number;
   income_series_weekly: PillarSeriesPoint[];
   base_strength_series_weekly: PillarSeriesPoint[];
   base_value_series_weekly: PillarSeriesPoint[];

@@ -1,7 +1,7 @@
 """Pure calculation helpers for business scoreboard metrics."""
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import timedelta, datetime
 from typing import Optional, Tuple, List, Dict
 
 import numpy as np
@@ -44,7 +44,7 @@ def _week_start(date_val: pd.Timestamp) -> pd.Timestamp:
     return date_val - pd.to_timedelta(date_val.weekday(), unit="D")
 
 
-def _ledger_by_expiry(account: Optional[str] = None, ticker: Optional[str] = None) -> pd.DataFrame:
+def _ledger_by_expiry(account: Optional[str] = None, ticker: Optional[str] = None, base_position_id: Optional[str] = None) -> pd.DataFrame:
     """Build a DataFrame of ledger rows keyed by expiry for juice aggregation."""
     rows = excel_loader.get_ledger_rows(account)
     df = pd.DataFrame(rows)
@@ -64,13 +64,15 @@ def _ledger_by_expiry(account: Optional[str] = None, ticker: Optional[str] = Non
     if ticker:
         df["ticker"] = df.get("ticker").astype(str).str.upper()
         df = df[df["ticker"] == ticker.upper()]
+    if base_position_id:
+        df = df[df.get("base_position_id") == base_position_id]
 
     df = df.dropna(subset=["expiry", "signed_juice_dollars"])
     return df
 
 
-def _net_juice_by_expiry_window(account: Optional[str], start: pd.Timestamp, end: pd.Timestamp, ticker: Optional[str] = None) -> float:
-    ledger = _ledger_by_expiry(account, ticker=ticker)
+def _net_juice_by_expiry_window(account: Optional[str], start: pd.Timestamp, end: pd.Timestamp, ticker: Optional[str] = None, base_position_id: Optional[str] = None) -> float:
+    ledger = _ledger_by_expiry(account, ticker=ticker, base_position_id=base_position_id)
     if ledger.empty:
         return 0.0
     mask = (ledger["expiry"] >= start) & (ledger["expiry"] < end)
@@ -130,7 +132,7 @@ def _net_ledger_juice_for_symbol(account: Optional[str], symbol: str) -> float:
     return float(filtered["signed_juice_dollars"].sum())
 
 
-def _ledger_income(account: Optional[str] = None, ticker: Optional[str] = None) -> float:
+def _ledger_income(account: Optional[str] = None, ticker: Optional[str] = None, base_position_id: Optional[str] = None) -> float:
     """
     Realized income from the ledger (same source as Trades & Ledger view).
     Uses signed_juice_dollars or derives it per row; sums all rows (no extra filters)
@@ -148,6 +150,8 @@ def _ledger_income(account: Optional[str] = None, ticker: Optional[str] = None) 
     if ticker:
         df["ticker"] = df.get("ticker").astype(str).str.upper()
         df = df[df["ticker"] == ticker.upper()]
+    if base_position_id:
+        df = df[df.get("base_position_id") == base_position_id]
     df = df.dropna(subset=["signed_juice_dollars"])
     if df.empty:
         return 0.0
@@ -164,6 +168,22 @@ def _income_after_base_protection(original_base: Optional[float], current_base: 
     coverage = (current_base or 0.0) + (protection or 0.0)
     shortfall = max(0.0, float(original_base) - coverage)
     return max(0.0, float(income) - shortfall)
+
+
+def _protection_allocation(original_base: Optional[float], current_base: Optional[float], protection: Optional[float], income: float) -> Tuple[float, float, float, float]:
+    """
+    Allocate juice to protection first. Returns:
+    protection_gap, protection_juice_applied, income_after_protection, juice_needed_for_full_protection.
+    """
+    if original_base in (None, 0):
+        return 0.0, 0.0, float(income), 0.0
+    coverage = (current_base or 0.0) + (protection or 0.0)
+    gap = max(0.0, float(original_base) - coverage)
+    income_pos = max(0.0, float(income))
+    applied = min(income_pos, gap)
+    income_after = float(income) - applied
+    juice_needed = max(0.0, gap - applied)
+    return gap, applied, income_after, juice_needed
 
 
 def _condition_from_score(score: int) -> str:
@@ -218,22 +238,37 @@ def list_regime_entries(symbol: Optional[str] = None) -> List[RegimeEntry]:
     return records
 
 
-def _net_intrinsic_for_symbol(account: Optional[str], symbol: str) -> float:
+def _net_intrinsic_for_position(
+    account: Optional[str],
+    symbol: str,
+    base_position_id: Optional[str] = None,
+    opened_date: Optional[pd.Timestamp] = None,
+    closed_date: Optional[pd.Timestamp] = None,
+) -> float:
     """
     Net protection from shorts for a symbol: sum over rows of
     protection_raw = (abs(juice) - abs(premium_total)) with the sign of juice.
+    Scoped by base_position_id if provided and limited to the base open/close window.
     """
     rows = excel_loader.get_ledger_rows(account)
     df = pd.DataFrame(rows)
     if df.empty:
         return 0.0
-    df["ticker"] = df["ticker"].astype(str).str.upper()
-    df = df[df["ticker"] == symbol.upper()]
+    if base_position_id:
+        df = df[df.get("base_position_id") == base_position_id]
+    else:
+        df["ticker"] = df["ticker"].astype(str).str.upper()
+        df = df[df["ticker"] == symbol.upper()]
     if df.empty:
         return 0.0
     df["contracts"] = pd.to_numeric(df.get("contracts"), errors="coerce")
     df["premium_buyback"] = pd.to_numeric(df.get("premium_buyback"), errors="coerce")
     df["action"] = df.get("action", "").astype(str).str.lower()
+    df["date"] = pd.to_datetime(df.get("date"), errors="coerce")
+    if opened_date is not None:
+        df = df[df["date"] >= opened_date]
+    if closed_date is not None:
+        df = df[df["date"] <= closed_date]
     # Always derive juice from row fields (strike/underlying/premium/action/side) since it is no longer stored in XLSX.
     df["signed_juice_dollars"] = df.apply(_signed_juice_from_row, axis=1)
 
@@ -245,7 +280,7 @@ def _net_intrinsic_for_symbol(account: Optional[str], symbol: str) -> float:
         if juice is None or prem is None or pd.isna(juice) or pd.isna(prem):
             return 0.0
         premium_total = prem * contracts
-        prot = abs(juice) - abs(premium_total)
+        prot = premium_total - juice
         if "close" in action:
             prot = -prot
         return float(prot)
@@ -253,7 +288,7 @@ def _net_intrinsic_for_symbol(account: Optional[str], symbol: str) -> float:
     return float(df.apply(_protection, axis=1).sum())
 
 
-def _income_series_by_week(account: Optional[str], symbol: Optional[str] = None) -> List[PillarSeriesPoint]:
+def _income_series_by_week(account: Optional[str], symbol: Optional[str] = None, base_position_id: Optional[str] = None) -> List[PillarSeriesPoint]:
     """Weekly realized income series derived from ledger rows (date-based)."""
     rows = excel_loader.get_ledger_rows(account)
     df = pd.DataFrame(rows)
@@ -264,6 +299,8 @@ def _income_series_by_week(account: Optional[str], symbol: Optional[str] = None)
     if symbol:
         df["ticker"] = df.get("ticker").astype(str).str.upper()
         df = df[df["ticker"] == symbol.upper()]
+    if base_position_id:
+        df = df[df.get("base_position_id") == base_position_id]
     if df.empty:
         return []
 
@@ -414,12 +451,39 @@ def _nav_series_weekly_monthly(snapshots: pd.DataFrame) -> Tuple[List[NavPoint],
 
 
 def _position_value_cost(legs: pd.DataFrame) -> Tuple[float, float]:
-    """Simplistic base value/cost from signed amounts. Positive amount = cash in."""
+    """
+    Base value/cost from leg quantities and prices.
+    - BUY increases cost; SELL reduces cost.
+    - Uses amount if it carries sign; otherwise derives from qty*price*(mult).
+    """
     if legs.empty:
         return 0.0, 0.0
-    # Amount is signed: BUY negative, SELL positive
-    cost = -legs["amount"].clip(upper=0).sum()
-    value = legs["amount"].sum()
+    legs = legs.copy()
+    legs["quantity"] = pd.to_numeric(legs.get("quantity"), errors="coerce")
+    legs["price"] = pd.to_numeric(legs.get("price"), errors="coerce")
+
+    def row_cash(row: pd.Series) -> float:
+        amt = row.get("amount")
+        qty = row.get("quantity")
+        price = row.get("price")
+        side = str(row.get("side") or "").upper()
+        instr = str(row.get("instrument_type") or "").upper()
+        mult = 100.0 if instr == "OPTION" else 1.0
+        # Prefer signed amount if present
+        if amt is not None and pd.notna(amt):
+            try:
+                return float(amt)
+            except Exception:
+                pass
+        if pd.isna(qty) or pd.isna(price):
+            return 0.0
+        cash = float(qty) * float(price) * mult
+        return -cash if side == "BUY" else cash
+
+    legs["cash"] = legs.apply(row_cash, axis=1)
+    value = legs["cash"].sum()
+    # Cost is cash outlay (buys) in absolute terms
+    cost = abs(legs[legs["cash"] < 0]["cash"].sum())
     return float(value), float(cost)
 
 
@@ -427,55 +491,57 @@ def _position_value_cost_units(legs: pd.DataFrame) -> Tuple[float, float, float]
     """Return base value, base cost, and current units (BUY adds, SELL subtracts)."""
     if legs.empty:
         return 0.0, 0.0, 0.0
-    # Preserve original cash-based cost/value
-    cash_value, cost = _position_value_cost(legs)
+    # Keep only leg_ids with net qty > 0 (OPEN minus CLOSE) and that have a MARK entry.
+    if {"base_leg_id", "side", "quantity", "tag"}.issubset(legs.columns):
+        net: Dict[str, float] = {}
+        has_mark: Dict[str, bool] = {}
+        for idx, row in legs.iterrows():
+            tag = str(row.get("tag") or "").upper()
+            leg_id = str(row.get("base_leg_id") or f"row-{idx}")
+            if tag == "MARK":
+                has_mark[leg_id] = True
+                continue
+            side = str(row.get("side") or "").upper()
+            qty = pd.to_numeric(row.get("quantity"), errors="coerce")
+            if pd.isna(qty):
+                continue
+            delta = qty if side == "BUY" else -qty
+            net[leg_id] = net.get(leg_id, 0.0) + float(delta)
+        open_ids = {lid for lid, qty in net.items() if qty > 0 and has_mark.get(lid)}
+        if open_ids:
+            legs = legs[legs["base_leg_id"].astype(str).isin(open_ids)]
+        else:
+            legs = legs.iloc[0:0]
+    if legs.empty:
+        return 0.0, 0.0, 0.0
 
-    # Track open qty and most recent mark/trade price per leg_id
     legs = legs.copy()
     legs = legs.sort_values(["date", "time"], na_position="last")
-    state: Dict[str, Dict[str, float]] = {}
-    any_mark = False
+    legs["amount"] = pd.to_numeric(legs.get("amount"), errors="coerce").fillna(0)
 
-    for _, row in legs.iterrows():
-        leg_id = str(row.get("base_leg_id") or f"row-{_}")
-        side = str(row.get("side") or "").upper()
-        tag = str(row.get("tag") or "").upper()
-        qty = pd.to_numeric(row.get("quantity"), errors="coerce")
-        price = pd.to_numeric(row.get("price"), errors="coerce")
-        instr = str(row.get("instrument_type") or "").upper()
-        mult = 100.0 if instr == "OPTION" else 1.0
+    # Current base: sum MARK amounts for open legs (amounts stored positive)
+    mark_amount = float(
+        legs[legs["tag"].astype(str).str.upper() == "MARK"]["amount"].sum()
+    )
+    base_value = mark_amount
 
-        if leg_id not in state:
-            state[leg_id] = {"qty": 0.0, "last_price": None, "mark_price": None, "mult": mult}
-        state[leg_id]["mult"] = mult
-
-        # Mark row: record mark price, do not change qty/cash
-        if tag == "MARK":
-            if not pd.isna(price):
-                state[leg_id]["mark_price"] = float(price)
-                any_mark = True
-            continue
-
-        if pd.isna(qty):
-            qty = 0.0
-        if not pd.isna(price):
-            state[leg_id]["last_price"] = float(price)
-
-        delta = qty if side == "BUY" else -qty
-        state[leg_id]["qty"] += float(delta)
-
-    # Compute marked value from open qty using latest mark (or last trade price)
-    marked_value = 0.0
+    # Units tracked from open legs (based on qty)
     current_units = 0.0
-    for leg_state in state.values():
-        qty = leg_state["qty"]
-        current_units += qty
-        price = leg_state["mark_price"] if leg_state["mark_price"] is not None else leg_state["last_price"]
-        if price is None:
-            continue
-        marked_value += qty * price * leg_state.get("mult", 1.0)
+    if {"quantity"}.issubset(legs.columns):
+        for _, row in legs.iterrows():
+            qty = pd.to_numeric(row.get("quantity"), errors="coerce")
+            if pd.isna(qty):
+                continue
+            tag = str(row.get("tag") or "").upper()
+            side = str(row.get("side") or "").upper()
+            if tag == "MARK":
+                continue
+            delta = qty if side == "BUY" else -qty
+            current_units += float(delta)
 
-    base_value = marked_value if any_mark else cash_value
+    # Base cost: sum of amounts for remaining open legs using only OPEN rows
+    cost = float(legs[legs["tag"].astype(str).str.upper() == "OPEN"]["amount"].sum())
+
     return float(base_value), float(cost), float(current_units)
 
 
@@ -489,16 +555,36 @@ def _initial_benchmark_cost(legs: pd.DataFrame, repl_rows: pd.DataFrame, base_va
         except Exception:
             pass
 
-    # Otherwise, use cumulative buy costs from legs (absolute of negative amounts)
-    if not legs.empty and "amount" in legs.columns:
-        buys = legs[legs["amount"] < 0]
+    # Otherwise, use cumulative buy costs from legs (derived if amounts are unsigned)
+    if not legs.empty:
+        legs = legs.copy()
+        legs["quantity"] = pd.to_numeric(legs.get("quantity"), errors="coerce")
+        legs["price"] = pd.to_numeric(legs.get("price"), errors="coerce")
+        legs["amount"] = pd.to_numeric(legs.get("amount"), errors="coerce")
+
+        def row_cost(row: pd.Series) -> float:
+            amt = row.get("amount")
+            if amt is not None and pd.notna(amt):
+                try:
+                    # If amount was stored unsigned, treat BUY as cash out
+                    if row.get("side", "").upper() == "BUY":
+                        return abs(float(amt))
+                    return -abs(float(amt))
+                except Exception:
+                    pass
+            qty = row.get("quantity")
+            price = row.get("price")
+            if pd.isna(qty) or pd.isna(price):
+                return 0.0
+            instr = str(row.get("instrument_type") or "").upper()
+            mult = 100.0 if instr == "OPTION" else 1.0
+            cash = float(qty) * float(price) * mult
+            return cash if str(row.get("side") or "").upper() == "BUY" else -cash
+
+        legs["calc_cost"] = legs.apply(row_cost, axis=1)
+        buys = legs[legs["calc_cost"] > 0]
         if not buys.empty:
-            return float(abs(buys["amount"].sum()))
-        # fallback to absolute of first amount
-        try:
-            return float(abs(legs.iloc[0]["amount"]))
-        except Exception:
-            pass
+            return float(buys["calc_cost"].sum())
 
     # Last resort: use current base value
     return float(abs(base_value))
@@ -540,7 +626,15 @@ def position_metrics(account: Optional[str] = None, include_closed: bool = False
 
         # Net juice to date: align with ledger income (same as dashboard income)
         net_juice_symbol = _ledger_income(account, pos["symbol"])
-        net_intrinsic = _net_intrinsic_for_symbol(account, pos["symbol"])
+        opened = pd.to_datetime(pos.get("opened_date"), errors="coerce")
+        closed = pd.to_datetime(pos.get("closed_date"), errors="coerce")
+        net_intrinsic = _net_intrinsic_for_position(
+            account,
+            pos["symbol"],
+            base_position_id=pid,
+            opened_date=opened if not pd.isna(opened) else None,
+            closed_date=closed if not pd.isna(closed) else None,
+        )
         base_plus_protection = (base_value or 0.0) + (net_intrinsic or 0.0)
         base_health_delta = base_plus_protection - (base_cost or 0.0)
 
@@ -596,12 +690,12 @@ def position_metrics(account: Optional[str] = None, include_closed: bool = False
     return results
 
 
-def _stock_income_rates(account: Optional[str], ticker: str) -> Tuple[Optional[float], Optional[float]]:
+def _stock_income_rates(account: Optional[str], ticker: str, base_position_id: Optional[str] = None) -> Tuple[Optional[float], Optional[float]]:
     """Compute current week/month realized income for a ticker."""
     week_start, week_end = _current_week_window()
     month_start, month_end = _current_month_window()
-    week_income = _net_juice_by_expiry_window(account, week_start, week_end, ticker=ticker)
-    month_income = _net_juice_by_expiry_window(account, month_start, month_end, ticker=ticker)
+    week_income = _net_juice_by_expiry_window(account, week_start, week_end, ticker=ticker, base_position_id=base_position_id)
+    month_income = _net_juice_by_expiry_window(account, month_start, month_end, ticker=ticker, base_position_id=base_position_id)
     return week_income, month_income
 
 
@@ -633,10 +727,11 @@ def stock_summary_rows(account: Optional[str] = None, include_closed: bool = Fal
         if original_base_value:
             base_market_value_change = (current_base_value or 0) - original_base_value
             base_growth_pct = _safe_ratio(base_market_value_change, original_base_value)
-        raw_income = _ledger_income(account, pm.position.symbol)
+        raw_income = _ledger_income(account, pm.position.symbol, base_position_id=pm.position.position_id)
         income_total_realized = _income_after_base_protection(original_base_value, current_base_value, protection, raw_income)
+        gap, applied, income_after, juice_needed = _protection_allocation(original_base_value, current_base_value, protection, raw_income)
         income_efficiency = _safe_ratio(income_total_realized, original_base_value)
-        week_income, month_income = _stock_income_rates(account, pm.position.symbol)
+        week_income, month_income = _stock_income_rates(account, pm.position.symbol, base_position_id=pm.position.position_id)
         consistency_pct = _stock_income_consistency(account, pm.position.symbol)
 
         rows.append(
@@ -649,6 +744,10 @@ def stock_summary_rows(account: Optional[str] = None, include_closed: bool = Fal
                 base_market_value_change=_clean_number(base_market_value_change),
                 base_growth_pct=_clean_number(base_growth_pct),
                 income_total_realized=float(income_total_realized),
+                income_after_protection=_clean_number(income_after),
+                protection_gap=_clean_number(gap),
+                protection_juice_applied=_clean_number(applied),
+                juice_needed_for_protection=_clean_number(juice_needed),
                 income_rate_weekly=_clean_number(week_income),
                 income_rate_monthly=_clean_number(month_income),
                 income_efficiency=_clean_number(income_efficiency),
@@ -674,8 +773,14 @@ def portfolio_summary(account: Optional[str] = None, include_closed: bool = Fals
     snapshots = business_loader.list_nav(account)
     latest_nav = _latest(snapshots, "date")
     total_account_value = _to_float(latest_nav["nav_total"]) if latest_nav is not None else None
+    total_cash = _to_float(latest_nav["nav_cash"]) if latest_nav is not None else None
 
     total_income = sum(r.income_total_realized for r in rows)
+    total_income_after_protection = sum((r.income_after_protection or 0.0) for r in rows)
+    total_protection_gap = sum((r.protection_gap or 0.0) for r in rows)
+    total_juice_needed = sum((r.juice_needed_for_protection or 0.0) for r in rows)
+    total_current_base_value = sum((r.current_base_value or 0.0) for r in rows)
+    total_protection_collected = sum((r.total_protection_collected or 0.0) for r in rows)
 
     # Weighted averages for base strength/growth (weight by original base)
     total_original = sum((r.original_base_value or 0.0) for r in rows)
@@ -689,7 +794,15 @@ def portfolio_summary(account: Optional[str] = None, include_closed: bool = Fals
 
     return PortfolioSummary(
         total_account_value=_clean_number(total_account_value),
+        total_cash=_clean_number(total_cash),
+        total_base_value_initial=_clean_number(total_original),
+        total_current_base_value=_clean_number(total_current_base_value),
+        total_protection_collected=_clean_number(total_protection_collected),
+        total_base_plus_protection=_clean_number((total_current_base_value or 0.0) + (total_protection_collected or 0.0)),
         total_income_realized=float(total_income),
+        total_income_after_protection=_clean_number(total_income_after_protection),
+        total_protection_gap=_clean_number(total_protection_gap),
+        total_juice_needed_for_protection=_clean_number(total_juice_needed),
         total_base_strength_ratio=_clean_number(base_strength_ratio),
         total_base_growth_pct=_clean_number(base_growth_pct),
         stocks=rows,
@@ -712,22 +825,28 @@ def stock_detail(ticker: str, account: Optional[str] = None, include_closed: boo
     if original_base_value:
         base_growth_pct = _safe_ratio((current_base_value or 0) - original_base_value, original_base_value)
 
-    raw_income = _ledger_income(account, ticker)
+    raw_income = _ledger_income(account, ticker, base_position_id=pm.position.position_id)
+    gap, applied, income_after, juice_needed = _protection_allocation(original_base_value, current_base_value, protection, raw_income)
     income_total_realized = _income_after_base_protection(original_base_value, current_base_value, protection, raw_income)
     income_efficiency = _safe_ratio(income_total_realized, original_base_value)
-    income_series = _income_series_by_week(account, symbol=ticker)
+    income_series = _income_series_by_week(account, symbol=ticker, base_position_id=pm.position.position_id)
     base_strength_series = _base_strength_series_placeholder(_clean_number(base_strength_ratio))
     base_value_series = _base_value_series_placeholder(_clean_number(current_base_value))
+    base_plus_protection = (current_base_value or 0.0) + (protection or 0.0)
 
     return StockDetail(
         ticker=ticker,
         base_strength_ratio=_clean_number(base_strength_ratio),
         base_growth_pct=_clean_number(base_growth_pct),
         income_total_realized=float(income_total_realized),
+        income_after_protection=_clean_number(income_after),
         income_efficiency=_clean_number(income_efficiency),
         base_market_value=_clean_number(current_base_value),
         original_base_value=_clean_number(original_base_value),
+        base_plus_protection=_clean_number(base_plus_protection),
         total_protection_collected=_clean_number(protection),
+        protection_gap=_clean_number(gap),
+        net_juice_total=_clean_number(raw_income),
         income_series_weekly=income_series,
         base_strength_series_weekly=base_strength_series,
         base_value_series_weekly=base_value_series,

@@ -141,6 +141,10 @@ class StockSummaryRow(BaseModel):
     base_market_value_change: Optional[float] = None
     base_growth_pct: Optional[float] = None
     income_total_realized: float = 0.0
+    income_after_protection: Optional[float] = None
+    protection_gap: Optional[float] = None
+    protection_juice_applied: Optional[float] = None
+    juice_needed_for_protection: Optional[float] = None
     income_rate_weekly: Optional[float] = None
     income_rate_monthly: Optional[float] = None
     income_efficiency: Optional[float] = None
@@ -155,10 +159,14 @@ class StockDetail(BaseModel):
     base_strength_ratio: Optional[float] = None
     base_growth_pct: Optional[float] = None
     income_total_realized: float = 0.0
+    income_after_protection: Optional[float] = None
     income_efficiency: Optional[float] = None
     base_market_value: Optional[float] = None
     original_base_value: Optional[float] = None
+    base_plus_protection: Optional[float] = None
     total_protection_collected: Optional[float] = None
+    protection_gap: Optional[float] = None
+    net_juice_total: Optional[float] = None
     income_series_weekly: list[PillarSeriesPoint] = Field(default_factory=list)
     base_strength_series_weekly: list[PillarSeriesPoint] = Field(default_factory=list)
     base_value_series_weekly: list[PillarSeriesPoint] = Field(default_factory=list)
@@ -167,7 +175,15 @@ class StockDetail(BaseModel):
 
 class PortfolioSummary(BaseModel):
     total_account_value: Optional[float] = None
+    total_cash: Optional[float] = None
+    total_base_value_initial: Optional[float] = None
+    total_current_base_value: Optional[float] = None
+    total_protection_collected: Optional[float] = None
+    total_base_plus_protection: Optional[float] = None
     total_income_realized: float = 0.0
+    total_income_after_protection: Optional[float] = None
+    total_protection_gap: Optional[float] = None
+    total_juice_needed_for_protection: Optional[float] = None
     total_base_strength_ratio: Optional[float] = None
     total_base_growth_pct: Optional[float] = None
     stocks: list[StockSummaryRow] = Field(default_factory=list)

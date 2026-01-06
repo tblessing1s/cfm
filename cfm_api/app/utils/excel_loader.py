@@ -524,9 +524,12 @@ def _cached_underlying(ticker: str, expiry: Any, trade_dt: Any = None) -> Any:
     """Attempt to pull the latest underlying from alpha_cache, refreshing if stale."""
     ticker = ticker.upper()
     expiry_dt = pd.to_datetime(expiry, errors="coerce")
-    if pd.isna(expiry_dt):
+    trade_ts = pd.to_datetime(trade_dt, errors="coerce") if trade_dt is not None else None
+    # Pick cache month from trade date if available; fallback to expiry.
+    target_dt = trade_ts if trade_ts is not None and not pd.isna(trade_ts) else expiry_dt
+    if pd.isna(target_dt):
         return None
-    month_str = expiry_dt.strftime("%Y-%m")
+    month_str = target_dt.strftime("%Y-%m")
     fname = f"{ticker}_{month_str}.json"
     path = ALPHA_CACHE_DIR / fname
     refresh_needed = not path.exists()
@@ -540,7 +543,7 @@ def _cached_underlying(ticker: str, expiry: Any, trade_dt: Any = None) -> Any:
     if not isinstance(data, dict):
         refresh_needed = True
 
-    trade_ts = pd.to_datetime(trade_dt, errors="coerce") if trade_dt is not None else None
+    trade_ts = trade_ts  # keep name stable below
     # Alpha Vantage intraday timestamps are US/Eastern; user inputs are treated as local.
     # Empirically the feed is ~1 hour ahead of the entered trade time, so bias lookup by +1h.
     trade_ts_lookup = trade_ts + pd.Timedelta(hours=1) if trade_ts is not None and not pd.isna(trade_ts) else None

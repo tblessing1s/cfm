@@ -205,7 +205,7 @@ export class AppComponent implements OnInit {
   selectedBaseLegId: string = '';
   baseLegDateTime?: string;
   legSideOptions = ['BUY', 'SELL'];
-  legTagOptions = ['OPEN', 'ROLL_OUT', 'ROLL_IN', 'CLOSE', 'ADD', 'REDUCE', 'MARK'];
+  legTagOptions = ['OPEN', 'CLOSE'];
   conditionOptions = ['GREEN', 'YELLOW', 'RED'];
   tradeConditionOptions = ['GREEN', 'YELLOW', 'RED'];
   reserveDraft: ReserveRow = this.buildBlankReserve();
@@ -827,7 +827,11 @@ export class AppComponent implements OnInit {
       this.businessError = 'Select a base position before adding a base leg.';
       return;
     }
+    // If updating an existing leg (selectedBaseLegId), treat it as a MARK unless explicitly closing.
     const payload = { ...this.baseLegDraft, position_id: positionId };
+    if (this.selectedBaseLegId && payload.tag !== 'CLOSE') {
+      payload.tag = 'MARK';
+    }
     this.dashboardService.createBaseLeg(payload).subscribe({
       next: () => {
         this.businessSuccess = 'Saved base leg.';
@@ -954,17 +958,13 @@ export class AppComponent implements OnInit {
   }
 
   recomputeBaseLegAmount(): void {
-    if ((this.baseLegDraft.tag || '').toUpperCase() === 'MARK') {
-      this.baseLegDraft.amount = 0;
-      return;
-    }
     const qty = this.toNumber(this.baseLegDraft.quantity) || 0;
     const price = this.toNumber(this.baseLegDraft.price) || 0;
     const fees = this.toNumber(this.baseLegDraft.fees) || 0;
-    const side = (this.baseLegDraft.side || '').toString().toUpperCase();
-    const gross = price * qty * 100; // scale to total notional (options multiplier)
-    const signed = side === 'SELL' ? gross : -gross;
-    const total = signed - fees;
+    const instr = (this.baseLegDraft.instrument_type || '').toString().toUpperCase();
+    const mult = instr === 'OPTION' ? 100 : 1;
+    const gross = Math.abs(price * qty * mult);
+    const total = gross + Math.abs(fees);
     this.baseLegDraft.amount = Math.round(total * 100) / 100;
   }
 
@@ -1701,27 +1701,22 @@ export class AppComponent implements OnInit {
     }
     this.dashboardService.listBaseLegs(positionId).subscribe({
       next: (legs) => {
-        // If the net open quantity for a base_leg_id is zero or negative (fully closed), hide it.
-        const netById = new Map<string, number>();
-        legs.forEach((leg) => {
+        // Only show legs that have an OPEN row with a matching MARK row and net qty > 0.
+        const grouped = legs.reduce<Record<string, { open?: BaseLeg; mark?: BaseLeg; net: number }>>((acc, leg) => {
           const id = leg.base_leg_id || '';
-          if (!id) return;
+          if (!id) return acc;
           const tag = (leg.tag || '').toString().toUpperCase();
           const qty = Number(leg.quantity || 0);
-          const current = netById.get(id) || 0;
-          const delta = tag === 'CLOSE' ? -qty : qty;
-          netById.set(id, current + delta);
-        });
-        const closedIds = new Set(
-          Array.from(netById.entries())
-            .filter(([_, net]) => !isFinite(net) || net <= 0)
-            .map(([id]) => id)
-        );
-        this.baseLegOptions = legs.filter(
-          (leg) =>
-            (leg.tag || '').toString().toUpperCase() !== 'CLOSE' &&
-            !closedIds.has(leg.base_leg_id)
-        );
+          if (!acc[id]) acc[id] = { net: 0 };
+          if (tag === 'OPEN') acc[id].open = leg;
+          if (tag === 'MARK') acc[id].mark = leg;
+          if (tag === 'CLOSE') acc[id].net -= qty;
+          if (tag === 'OPEN') acc[id].net += qty;
+          return acc;
+        }, {});
+        this.baseLegOptions = Object.values(grouped)
+          .filter((g) => g.open && g.mark && g.net > 0)
+          .map((g) => g.open as BaseLeg);
       },
       error: () => {
         this.baseLegOptions = [];
@@ -1745,7 +1740,7 @@ export class AppComponent implements OnInit {
       ...leg,
       date: today,
       time: '09:30',
-      tag: 'MARK',
+      tag: 'OPEN',
       amount: 0,
       fees: leg.fees ?? 0,
     };

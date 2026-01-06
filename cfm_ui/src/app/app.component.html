@@ -57,9 +57,9 @@
             <div class="metric-value">{{ portfolioSummary?.total_account_value || 0 | number:'1.0-0' }}</div>
           </div>
           <div class="metric-card">
-            <div class="metric-label">Income realized</div>
-            <div class="metric-value">{{ portfolioSummary?.total_income_realized || 0 | number:'1.2-2' }}</div>
-            <div class="metric-help">Sum of realized premium.</div>
+            <div class="metric-label">Total cash</div>
+            <div class="metric-value">{{ portfolioSummary?.total_cash || 0 | number:'1.0-0' }}</div>
+            <div class="metric-help">Latest NAV cash balance.</div>
           </div>
           <div class="metric-card">
             <div class="metric-label">Base Strength</div>
@@ -67,9 +67,32 @@
             <div class="metric-help">Weighted (current base + protection) / original.</div>
           </div>
           <div class="metric-card">
-            <div class="metric-label">Base Growth</div>
-            <div class="metric-value">{{ portfolioSummary?.total_base_growth_pct || 0 | percent:'1.1-1' }}</div>
-            <div class="metric-help">Weighted pct vs original base.</div>
+            <div class="metric-label">Initial base value</div>
+            <div class="metric-value">{{ portfolioSummary?.total_base_value_initial || 0 | number:'1.0-0' }}</div>
+            <div class="metric-help">Sum of long cost basis.</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Base + Protection</div>
+            <div class="metric-value">{{ portfolioSummary?.total_base_plus_protection || 0 | number:'1.0-0' }}</div>
+            <div class="metric-help">
+              Current base {{ portfolioSummary?.total_current_base_value || 0 | number:'1.0-0' }},
+              Protection {{ portfolioSummary?.total_protection_collected || 0 | number:'1.0-0' }}.
+            </div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Net juice</div>
+            <div class="metric-value">{{ portfolioSummary?.total_income_realized || 0 | number:'1.2-2' }}</div>
+            <div class="metric-help">Sum of realized premium.</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Protection gap</div>
+            <div class="metric-value">{{ portfolioSummary?.total_protection_gap || 0 | number:'1.2-2' }}</div>
+            <div class="metric-help">How much coverage is needed to restore bases.</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Income after protection</div>
+            <div class="metric-value">{{ portfolioSummary?.total_income_after_protection || 0 | number:'1.2-2' }}</div>
+            <div class="metric-help">Juice left after filling protection gap.</div>
           </div>
         </div>
       </div>
@@ -96,6 +119,8 @@
               <tr>
                 <th>Ticker</th>
                 <th>Income</th>
+                <th>Income after prot.</th>
+                <th>Prot. gap</th>
                 <th>Income efficiency</th>
                 <th>Base strength</th>
                 <th>Base growth</th>
@@ -105,12 +130,14 @@
               <tr *ngFor="let row of stockRows" (click)="selectStock(row.ticker)" class="cursor-pointer hover:bg-surface">
                 <td class="font-semibold">{{ row.ticker }}</td>
                 <td>{{ row.income_total_realized || 0 | number:'1.2-2' }}</td>
+                <td>{{ row.income_after_protection || 0 | number:'1.2-2' }}</td>
+                <td>{{ row.protection_gap || 0 | number:'1.2-2' }}</td>
                 <td>{{ row.income_efficiency || 0 | percent:'1.1-1' }}</td>
                 <td>{{ row.base_strength_ratio || 0 | number:'1.2-2' }}</td>
                 <td>{{ row.base_growth_pct || 0 | percent:'1.1-1' }}</td>
               </tr>
               <tr *ngIf="!stockRows.length">
-                <td colspan="5" class="text-center text-muted py-3">No stocks yet.</td>
+                <td colspan="7" class="text-center text-muted py-3">No stocks yet.</td>
               </tr>
             </tbody>
           </table>
@@ -134,14 +161,14 @@
         <ng-container *ngIf="!stockDetailLoading && stockDetail">
           <div class="metric-grid">
             <div class="metric-card">
-              <div class="metric-label">Income realized</div>
-              <div class="metric-value">{{ stockDetail?.income_total_realized || 0 | number:'1.2-2' }}</div>
-              <div class="metric-help">Total realized premium.</div>
+              <div class="metric-label">Initial base value</div>
+              <div class="metric-value">{{ stockDetail?.original_base_value || 0 | number:'1.2-2' }}</div>
+              <div class="metric-help">Sum of open base leg amounts.</div>
             </div>
             <div class="metric-card">
-              <div class="metric-label">Income efficiency</div>
-              <div class="metric-value">{{ stockDetail?.income_efficiency || 0 | percent:'1.1-1' }}</div>
-              <div class="metric-help">Income / original base.</div>
+              <div class="metric-label">Base + Protection</div>
+              <div class="metric-value">{{ stockDetail?.base_plus_protection || 0 | number:'1.2-2' }}</div>
+              <div class="metric-help">Current base + protection collected.</div>
             </div>
             <div class="metric-card">
               <div class="metric-label">Base strength</div>
@@ -149,32 +176,19 @@
               <div class="metric-help">(Current base + protection) / original.</div>
             </div>
             <div class="metric-card">
-              <div class="metric-label">Base growth</div>
-              <div class="metric-value">{{ stockDetail?.base_growth_pct || 0 | percent:'1.1-1' }}</div>
-              <div class="metric-help">Market value change vs original base.</div>
-            </div>
-          </div>
-          <div class="metric-grid mt-4">
-            <div class="metric-card">
-              <div class="metric-label">Weekly income</div>
-              <div *ngIf="stockDetail?.income_series_weekly?.length; else noIncomeSeries">
-                <div *ngFor="let pt of stockDetail?.income_series_weekly">{{ pt.period_start }} · {{ pt.value | number:'1.2-2' }}</div>
-              </div>
-              <ng-template #noIncomeSeries><div class="text-muted text-sm">No income history.</div></ng-template>
+              <div class="metric-label">Net juice</div>
+              <div class="metric-value">{{ stockDetail?.net_juice_total || 0 | number:'1.2-2' }}</div>
+              <div class="metric-help">Total realized premium.</div>
             </div>
             <div class="metric-card">
-              <div class="metric-label">Base strength trend</div>
-              <div *ngIf="stockDetail?.base_strength_series_weekly?.length; else noStrengthSeries">
-                <div *ngFor="let pt of stockDetail?.base_strength_series_weekly">{{ pt.period_start }} · {{ pt.value | number:'1.2-2' }}</div>
-              </div>
-              <ng-template #noStrengthSeries><div class="text-muted text-sm">No base strength history.</div></ng-template>
+              <div class="metric-label">Protection gap</div>
+              <div class="metric-value">{{ stockDetail?.protection_gap || 0 | number:'1.2-2' }}</div>
+              <div class="metric-help">Coverage needed to restore base.</div>
             </div>
             <div class="metric-card">
-              <div class="metric-label">Base value trend</div>
-              <div *ngIf="stockDetail?.base_value_series_weekly?.length; else noBaseSeries">
-                <div *ngFor="let pt of stockDetail?.base_value_series_weekly">{{ pt.period_start }} · {{ pt.value | number:'1.2-2' }}</div>
-              </div>
-              <ng-template #noBaseSeries><div class="text-muted text-sm">No base value history.</div></ng-template>
+              <div class="metric-label">Income after protection</div>
+              <div class="metric-value">{{ stockDetail?.income_after_protection || 0 | number:'1.2-2' }}</div>
+              <div class="metric-help">Juice left after filling protection gap.</div>
             </div>
           </div>
           <div class="trades-panel">
@@ -743,7 +757,7 @@
               <select class="input-control" [(ngModel)]="selectedBaseLegId" (ngModelChange)="onBaseLegSelect($event)">
                 <option [ngValue]="''">— New base leg —</option>
                 <option *ngFor="let leg of baseLegOptions" [ngValue]="leg.base_leg_id">
-                  {{ leg.base_leg_id }} · {{ leg.tag || 'OPEN' }} · {{ leg.date | date:'yyyy-MM-dd' }}
+                  {{ leg.base_leg_id }} · {{ leg.date | date:'yyyy-MM-dd' }}
                 </option>
               </select>
             </label>

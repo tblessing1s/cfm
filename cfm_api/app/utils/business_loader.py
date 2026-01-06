@@ -10,9 +10,11 @@ from typing import Dict, List, Optional, Any
 import pandas as pd
 import numpy as np
 import shutil
+import logging
 
 from .excel_loader import BASE_DIR, JOURNAL_ROOT, DATA_DIR, _discover_accounts
 
+logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class CsvStore:
@@ -346,6 +348,93 @@ def list_base_legs(position_id: Optional[str] = None) -> pd.DataFrame:
 
 
 def add_base_leg(payload: Dict[str, Any]) -> Dict[str, Any]:
+    qty = payload.get("quantity")
+    price = payload.get("price")
+    fees = payload.get("fees", 0)
+    amount = payload.get("amount")
+    instr = str(payload.get("instrument_type") or "").upper()
+    mult = 100.0 if (instr == "" or instr == "OPTION") else 1.0
+    tag_val = str(payload.get("tag") or "").upper()
+    # If this is a MARK and qty is missing, reuse qty from the last leg for this base_leg_id (or position)
+    if (qty is None or qty == "" or qty == 0) and tag_val == "MARK":
+        try:
+            df_prev = legs_store.load()
+            if not df_prev.empty:
+                target = df_prev
+                if "base_leg_id" in df_prev.columns and payload.get("base_leg_id"):
+                    target = df_prev[df_prev["base_leg_id"] == payload.get("base_leg_id")]
+                if (target.empty) and ("position_id" in df_prev.columns) and payload.get("position_id"):
+                    target = df_prev[df_prev["position_id"] == payload.get("position_id")]
+                if not target.empty:
+                    prev = target.iloc[-1]
+                    qty = prev.get("quantity") if prev.get("quantity") not in (None, "") else qty
+                    if (instr == "" or instr is None) and prev.get("instrument_type"):
+                        instr = str(prev.get("instrument_type")).upper()
+                    mult = 100.0 if ((instr or "").upper() in ("", "OPTION")) else 1.0
+        except Exception:
+            pass
+    try:
+        qty = abs(float(qty)) if qty is not None else None
+    except Exception:
+        pass
+    try:
+        price = abs(float(price)) if price is not None else None
+    except Exception:
+        pass
+    try:
+        fees = abs(float(fees)) if fees is not None else 0
+    except Exception:
+        fees = 0
+    try:
+        amount = abs(float(amount)) if amount is not None else None
+    except Exception:
+        amount = None
+    # For MARK, if price missing reuse last price for this leg/position
+    if tag_val == "MARK" and (price is None or price == ""):
+        try:
+            df_prev = legs_store.load()
+            if not df_prev.empty:
+                target = df_prev
+                if "base_leg_id" in df_prev.columns and payload.get("base_leg_id"):
+                    target = df_prev[df_prev["base_leg_id"] == payload.get("base_leg_id")]
+                if (target.empty) and ("position_id" in df_prev.columns) and payload.get("position_id"):
+                    target = df_prev[df_prev["position_id"] == payload.get("position_id")]
+                if not target.empty:
+                    prev = target.iloc[-1]
+                    price_prev = prev.get("price")
+                    if price_prev not in (None, "") and not pd.isna(price_prev):
+                        try:
+                            price = abs(float(price_prev))
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+    # Auto-calc amount for marks or when missing
+    if amount is None or tag_val == "MARK":
+        if qty is not None and price is not None:
+            amount = abs(qty * price * mult)
+            logger.info(
+                "[base_leg calc] tag=%s qty=%s price=%s mult=%s amount=%s base_leg_id=%s position_id=%s",
+                tag_val,
+                qty,
+                price,
+                mult,
+                amount,
+                payload.get("base_leg_id"),
+                payload.get("position_id"),
+            )
+        else:
+            logger.info(
+                "[base_leg calc skipped] tag=%s qty=%s price=%s mult=%s base_leg_id=%s position_id=%s",
+                tag_val,
+                qty,
+                price,
+                mult,
+                payload.get("base_leg_id"),
+                payload.get("position_id"),
+            )
+
     row = {
         "base_leg_id": payload.get("base_leg_id") or _uuid(),
         "position_id": payload["position_id"],
@@ -353,16 +442,48 @@ def add_base_leg(payload: Dict[str, Any]) -> Dict[str, Any]:
         "time": payload.get("time"),
         "instrument_type": payload.get("instrument_type", "").upper(),
         "side": payload.get("side", "").upper(),
-        "quantity": payload.get("quantity"),
+        "quantity": qty,
         "strike": payload.get("strike"),
         "expiry": payload.get("expiry"),
-        "price": payload.get("price"),
-        "fees": payload.get("fees", 0),
-        "amount": payload.get("amount"),
+        "price": price,
+        "fees": fees,
+        "amount": amount,
         "tag": payload.get("tag"),
         "condition": payload.get("condition"),
     }
-    legs_store.append_rows([row])
+
+    # Manage MARK/CLOSE upsert so only one MARK exists per base_leg_id; for OPEN ensure a paired MARK row exists.
+    df = legs_store.load()
+    if "tag" in df.columns:
+        df["tag"] = df["tag"].astype(str).str.upper()
+    base_leg_id = row["base_leg_id"]
+
+    if tag_val == "MARK":
+        if not df.empty:
+            df = df[~((df.get("base_leg_id") == base_leg_id) & (df.get("tag") == "MARK"))]
+        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+        legs_store.overwrite(df.where(pd.notna(df), None).to_dict("records"))
+        return row
+
+    if tag_val == "CLOSE":
+        if not df.empty:
+            df = df[~((df.get("base_leg_id") == base_leg_id) & (df.get("tag") == "MARK"))]
+        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+        legs_store.overwrite(df.where(pd.notna(df), None).to_dict("records"))
+        return row
+
+    # OPEN: append/overwrite OPEN and ensure a MARK exists
+    if not df.empty:
+        # remove any existing OPEN for this base_leg_id to avoid duplicates
+        df = df[~((df.get("base_leg_id") == base_leg_id) & (df.get("tag") == "OPEN"))]
+    mark_row = dict(row)
+    mark_row["tag"] = "MARK"
+    df_new = [row]
+    # Only add mark_row if a MARK is not already present
+    if df.empty or not ((df.get("base_leg_id") == base_leg_id) & (df.get("tag") == "MARK")).any():
+        df_new.append(mark_row)
+    df = pd.concat([df, pd.DataFrame(df_new)], ignore_index=True)
+    legs_store.overwrite(df.where(pd.notna(df), None).to_dict("records"))
     return row
 
 
