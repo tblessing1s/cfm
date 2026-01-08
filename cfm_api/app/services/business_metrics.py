@@ -74,11 +74,27 @@ def _ledger_by_expiry(account: Optional[str] = None, ticker: Optional[str] = Non
     return df
 
 
-def _net_juice_by_expiry_window(account: Optional[str], start: pd.Timestamp, end: pd.Timestamp, ticker: Optional[str] = None, base_position_id: Optional[str] = None) -> float:
+def _net_juice_by_expiry_window(
+    account: Optional[str],
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    ticker: Optional[str] = None,
+    base_position_id: Optional[str] = None,
+    expiry_start: Optional[pd.Timestamp] = None,
+    expiry_end: Optional[pd.Timestamp] = None,
+) -> float:
     ledger = _ledger_by_expiry(account, ticker=ticker, base_position_id=base_position_id)
     if ledger.empty:
         return 0.0
-    mask = (ledger["expiry"] >= start) & (ledger["expiry"] < end)
+    window_start = start
+    window_end = end
+    if expiry_start is not None:
+        window_start = max(window_start, expiry_start)
+    if expiry_end is not None:
+        window_end = min(window_end, expiry_end + pd.Timedelta(days=1))
+    if window_end <= window_start:
+        return 0.0
+    mask = (ledger["expiry"] >= window_start) & (ledger["expiry"] < window_end)
     return float(ledger.loc[mask, "signed_juice_dollars"].sum())
 
 
@@ -276,6 +292,8 @@ def _net_intrinsic_for_position(
     base_position_id: Optional[str] = None,
     opened_date: Optional[pd.Timestamp] = None,
     closed_date: Optional[pd.Timestamp] = None,
+    expiry_start: Optional[pd.Timestamp] = None,
+    expiry_end: Optional[pd.Timestamp] = None,
 ) -> float:
     """
     Net protection from shorts for a symbol: sum over rows of
@@ -301,6 +319,14 @@ def _net_intrinsic_for_position(
         df = df[df["date"] >= opened_date]
     if closed_date is not None:
         df = df[df["date"] <= closed_date]
+    if "expiry" in df.columns:
+        df["expiry"] = pd.to_datetime(df.get("expiry"), errors="coerce")
+    if (expiry_start is not None or expiry_end is not None) and "expiry" in df.columns:
+        normalized = df["expiry"].dt.normalize()
+        if expiry_start is not None:
+            df = df[normalized >= expiry_start]
+        if expiry_end is not None:
+            df = df[normalized <= expiry_end]
     # Always derive juice from row fields (strike/underlying/premium/action/side) since it is no longer stored in XLSX.
     df["signed_juice_dollars"] = df.apply(_signed_juice_from_row, axis=1)
 
@@ -649,11 +675,18 @@ def _roll_flags(legs: pd.DataFrame) -> Tuple[bool, bool]:
     return dte <= 45, dte <= 30
 
 
-def position_metrics(account: Optional[str] = None, include_closed: bool = False) -> List[PositionMetrics]:
+def position_metrics(
+    account: Optional[str] = None,
+    include_closed: bool = False,
+    expiry_start: Optional[str] = None,
+    expiry_end: Optional[str] = None,
+) -> List[PositionMetrics]:
     positions_df = business_loader.list_positions(account)
     reserves_df = business_loader.list_reserves()
     repl_df = business_loader.list_replacement_costs()
     results: List[PositionMetrics] = []
+    expiry_start_ts = _normalize_expiry(expiry_start)
+    expiry_end_ts = _normalize_expiry(expiry_end)
 
     for _, pos in positions_df.iterrows():
         # Skip closed bases unless explicitly requested
@@ -670,7 +703,12 @@ def position_metrics(account: Optional[str] = None, include_closed: bool = False
         unit_replacement_cost = benchmark_cost / current_units if current_units else None
 
         # Net juice to date: align with ledger income (same as dashboard income)
-        net_juice_symbol = _ledger_income(account, pos["symbol"])
+        net_juice_symbol = _ledger_income(
+            account,
+            pos["symbol"],
+            expiry_start=expiry_start_ts,
+            expiry_end=expiry_end_ts,
+        )
         opened = pd.to_datetime(pos.get("opened_date"), errors="coerce")
         closed = pd.to_datetime(pos.get("closed_date"), errors="coerce")
         net_intrinsic = _net_intrinsic_for_position(
@@ -679,6 +717,8 @@ def position_metrics(account: Optional[str] = None, include_closed: bool = False
             base_position_id=pid,
             opened_date=opened if not pd.isna(opened) else None,
             closed_date=closed if not pd.isna(closed) else None,
+            expiry_start=expiry_start_ts,
+            expiry_end=expiry_end_ts,
         )
         base_plus_protection = (base_value or 0.0) + (net_intrinsic or 0.0)
         base_health_delta = base_plus_protection - (base_cost or 0.0)
@@ -735,12 +775,34 @@ def position_metrics(account: Optional[str] = None, include_closed: bool = False
     return results
 
 
-def _stock_income_rates(account: Optional[str], ticker: str, base_position_id: Optional[str] = None) -> Tuple[Optional[float], Optional[float]]:
+def _stock_income_rates(
+    account: Optional[str],
+    ticker: str,
+    base_position_id: Optional[str] = None,
+    expiry_start: Optional[pd.Timestamp] = None,
+    expiry_end: Optional[pd.Timestamp] = None,
+) -> Tuple[Optional[float], Optional[float]]:
     """Compute current week/month realized income for a ticker."""
     week_start, week_end = _current_week_window()
     month_start, month_end = _current_month_window()
-    week_income = _net_juice_by_expiry_window(account, week_start, week_end, ticker=ticker, base_position_id=base_position_id)
-    month_income = _net_juice_by_expiry_window(account, month_start, month_end, ticker=ticker, base_position_id=base_position_id)
+    week_income = _net_juice_by_expiry_window(
+        account,
+        week_start,
+        week_end,
+        ticker=ticker,
+        base_position_id=base_position_id,
+        expiry_start=expiry_start,
+        expiry_end=expiry_end,
+    )
+    month_income = _net_juice_by_expiry_window(
+        account,
+        month_start,
+        month_end,
+        ticker=ticker,
+        base_position_id=base_position_id,
+        expiry_start=expiry_start,
+        expiry_end=expiry_end,
+    )
     return week_income, month_income
 
 
@@ -764,7 +826,12 @@ def stock_summary_rows(
     expiry_end: Optional[str] = None,
 ) -> List[StockSummaryRow]:
     """Aggregate per-stock rows for ranking tables."""
-    pos_metrics = position_metrics(account, include_closed=include_closed)
+    pos_metrics = position_metrics(
+        account,
+        include_closed=include_closed,
+        expiry_start=expiry_start,
+        expiry_end=expiry_end,
+    )
     rows: List[StockSummaryRow] = []
     expiry_start_ts = _normalize_expiry(expiry_start)
     expiry_end_ts = _normalize_expiry(expiry_end)
@@ -789,7 +856,13 @@ def stock_summary_rows(
         income_total_realized = _income_after_base_protection(original_base_value, current_base_value, protection, raw_income)
         gap, applied, income_after, juice_needed = _protection_allocation(original_base_value, current_base_value, protection, raw_income)
         income_efficiency = _safe_ratio(income_total_realized, original_base_value)
-        week_income, month_income = _stock_income_rates(account, pm.position.symbol, base_position_id=pm.position.position_id)
+        week_income, month_income = _stock_income_rates(
+            account,
+            pm.position.symbol,
+            base_position_id=pm.position.position_id,
+            expiry_start=expiry_start_ts,
+            expiry_end=expiry_end_ts,
+        )
         consistency_pct = _stock_income_consistency(account, pm.position.symbol)
 
         rows.append(
@@ -877,14 +950,31 @@ def portfolio_summary(
     )
 
 
-def stock_detail(ticker: str, account: Optional[str] = None, include_closed: bool = False) -> StockDetail:
+def stock_detail(
+    ticker: str,
+    account: Optional[str] = None,
+    include_closed: bool = False,
+    expiry_start: Optional[str] = None,
+    expiry_end: Optional[str] = None,
+) -> StockDetail:
     """Per-stock drillable detail including pillars and series."""
     ticker = ticker.upper()
-    rows = [pm for pm in position_metrics(account, include_closed=include_closed) if pm.position.symbol.upper() == ticker]
+    rows = [
+        pm
+        for pm in position_metrics(
+            account,
+            include_closed=include_closed,
+            expiry_start=expiry_start,
+            expiry_end=expiry_end,
+        )
+        if pm.position.symbol.upper() == ticker
+    ]
     if not rows:
         return StockDetail(ticker=ticker)
 
     pm = rows[0]
+    expiry_start_ts = _normalize_expiry(expiry_start)
+    expiry_end_ts = _normalize_expiry(expiry_end)
     original_base_value = pm.initial_base_cost or pm.base_cost
     current_base_value = pm.base_value
     protection = pm.net_intrinsic_to_date
@@ -893,7 +983,13 @@ def stock_detail(ticker: str, account: Optional[str] = None, include_closed: boo
     if original_base_value:
         base_growth_pct = _safe_ratio((current_base_value or 0) - original_base_value, original_base_value)
 
-    raw_income = _ledger_income(account, ticker, base_position_id=pm.position.position_id)
+    raw_income = _ledger_income(
+        account,
+        ticker,
+        base_position_id=pm.position.position_id,
+        expiry_start=expiry_start_ts,
+        expiry_end=expiry_end_ts,
+    )
     gap, applied, income_after, juice_needed = _protection_allocation(original_base_value, current_base_value, protection, raw_income)
     income_total_realized = _income_after_base_protection(original_base_value, current_base_value, protection, raw_income)
     income_efficiency = _safe_ratio(income_total_realized, original_base_value)
@@ -922,7 +1018,12 @@ def stock_detail(ticker: str, account: Optional[str] = None, include_closed: boo
     )
 
 
-def _latest_cycle_income(account: Optional[str], symbol: str) -> float:
+def _latest_cycle_income(
+    account: Optional[str],
+    symbol: str,
+    expiry_start: Optional[pd.Timestamp] = None,
+    expiry_end: Optional[pd.Timestamp] = None,
+) -> float:
     rows = excel_loader.get_ledger_rows(account)
     df = pd.DataFrame(rows)
     if df.empty:
@@ -932,6 +1033,12 @@ def _latest_cycle_income(account: Optional[str], symbol: str) -> float:
     if df.empty:
         return 0.0
     df["expiry"] = pd.to_datetime(df.get("expiry"), errors="coerce")
+    if expiry_start is not None or expiry_end is not None:
+        normalized = df["expiry"].dt.normalize()
+        if expiry_start is not None:
+            df = df[normalized >= expiry_start]
+        if expiry_end is not None:
+            df = df[normalized <= expiry_end]
     df["signed_juice_dollars"] = pd.to_numeric(df.get("signed_juice_dollars"), errors="coerce")
     missing = df["signed_juice_dollars"].isna()
     if missing.any():
@@ -951,10 +1058,23 @@ def _latest_cycle_income(account: Optional[str], symbol: str) -> float:
     return 0.0
 
 
-def protection_metrics(symbol: str, account: Optional[str] = None, target_income: float = 82.5) -> ProtectionMetrics:
+def protection_metrics(
+    symbol: str,
+    account: Optional[str] = None,
+    target_income: float = 82.5,
+    expiry_start: Optional[str] = None,
+    expiry_end: Optional[str] = None,
+) -> ProtectionMetrics:
     symbol = symbol.upper()
-    cumulative_income = _ledger_income(account, symbol)
-    latest_cycle_income = _latest_cycle_income(account, symbol)
+    expiry_start_ts = _normalize_expiry(expiry_start)
+    expiry_end_ts = _normalize_expiry(expiry_end)
+    cumulative_income = _ledger_income(account, symbol, expiry_start=expiry_start_ts, expiry_end=expiry_end_ts)
+    latest_cycle_income = _latest_cycle_income(
+        account,
+        symbol,
+        expiry_start=expiry_start_ts,
+        expiry_end=expiry_end_ts,
+    )
     shortfall = max(0.0, target_income - latest_cycle_income)
     defense_cost = shortfall
     estimated_break_even_drop = None
@@ -975,15 +1095,33 @@ def protection_metrics(symbol: str, account: Optional[str] = None, target_income
     )
 
 
-def business_dashboard(account: Optional[str] = None) -> BusinessDashboard:
+def business_dashboard(
+    account: Optional[str] = None,
+    expiry_start: Optional[str] = None,
+    expiry_end: Optional[str] = None,
+) -> BusinessDashboard:
     trades = excel_loader.get_all_trades(account)
     snapshots = business_loader.list_nav(account)
 
     week_start, week_end = _current_week_window()
     month_start, month_end = _current_month_window()
+    expiry_start_ts = _normalize_expiry(expiry_start)
+    expiry_end_ts = _normalize_expiry(expiry_end)
 
-    week_juice = _net_juice_by_expiry_window(account, week_start, week_end)
-    month_juice = _net_juice_by_expiry_window(account, month_start, month_end)
+    week_juice = _net_juice_by_expiry_window(
+        account,
+        week_start,
+        week_end,
+        expiry_start=expiry_start_ts,
+        expiry_end=expiry_end_ts,
+    )
+    month_juice = _net_juice_by_expiry_window(
+        account,
+        month_start,
+        month_end,
+        expiry_start=expiry_start_ts,
+        expiry_end=expiry_end_ts,
+    )
 
     nav_week_start = _nav_at_start(snapshots, week_start)
     nav_month_start = _nav_at_start(snapshots, month_start)
@@ -997,7 +1135,7 @@ def business_dashboard(account: Optional[str] = None) -> BusinessDashboard:
     nav_current, drawdown = _drawdown(snapshots["nav_total"]) if "nav_total" in snapshots else (None, None)
     preservation = _safe_ratio(nav_current, contributed) if nav_current is not None else None
 
-    pos_metrics = position_metrics(account)
+    pos_metrics = position_metrics(account, expiry_start=expiry_start, expiry_end=expiry_end)
     required_reserve = float(sum((pm.reserve_cash or 0) for pm in pos_metrics))
     free_cash = None
     nav_cash = None

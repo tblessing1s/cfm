@@ -313,12 +313,40 @@ export class DashboardService {
   }
 
   // Business dashboard
-  getBusinessDashboard(account?: string): Observable<BusinessDashboard> {
-    return this.http.get<BusinessDashboard>(`${this.baseUrl}/business-dashboard`, this._buildRequestOptions(account));
+  getBusinessDashboard(account?: string, expiryStart?: string, expiryEnd?: string): Observable<BusinessDashboard> {
+    let params = new HttpParams();
+    if (account) {
+      params = params.set('account', account);
+    }
+    if (expiryStart) {
+      params = params.set('expiry_start', expiryStart);
+    }
+    if (expiryEnd) {
+      params = params.set('expiry_end', expiryEnd);
+    }
+    return this.http.get<BusinessDashboard>(`${this.baseUrl}/business-dashboard`, params.keys().length ? { params } : {});
   }
 
-  listPositionMetrics(account?: string, includeClosed: boolean = false): Observable<PositionMetrics[]> {
-    const options = this._buildRequestOptions(account, includeClosed);
+  listPositionMetrics(
+    account?: string,
+    includeClosed: boolean = false,
+    expiryStart?: string,
+    expiryEnd?: string
+  ): Observable<PositionMetrics[]> {
+    let params = new HttpParams();
+    if (account) {
+      params = params.set('account', account);
+    }
+    if (includeClosed) {
+      params = params.set('include_closed', 'true');
+    }
+    if (expiryStart) {
+      params = params.set('expiry_start', expiryStart);
+    }
+    if (expiryEnd) {
+      params = params.set('expiry_end', expiryEnd);
+    }
+    const options = params.keys().length ? { params } : {};
     return this.http.get<PositionMetrics[]>(`${this.baseUrl}/positions`, options);
   }
 
@@ -343,8 +371,30 @@ export class DashboardService {
     return this.http.get<StockSummaryRow[]>(`${this.baseUrl}/stocks`, this._buildRequestOptions(account, includeClosed));
   }
 
-  getStockDetail(ticker: string, account?: string, includeClosed?: boolean): Observable<StockDetail> {
-    return this.http.get<StockDetail>(`${this.baseUrl}/stocks/${encodeURIComponent(ticker)}`, this._buildRequestOptions(account, includeClosed));
+  getStockDetail(
+    ticker: string,
+    account?: string,
+    includeClosed?: boolean,
+    expiryStart?: string,
+    expiryEnd?: string
+  ): Observable<StockDetail> {
+    let params = new HttpParams();
+    if (account) {
+      params = params.set('account', account);
+    }
+    if (includeClosed) {
+      params = params.set('include_closed', 'true');
+    }
+    if (expiryStart) {
+      params = params.set('expiry_start', expiryStart);
+    }
+    if (expiryEnd) {
+      params = params.set('expiry_end', expiryEnd);
+    }
+    return this.http.get<StockDetail>(
+      `${this.baseUrl}/stocks/${encodeURIComponent(ticker)}`,
+      params.keys().length ? { params } : {}
+    );
   }
 
   createRegimeEntry(payload: RegimeEntry): Observable<RegimeEntry> {
@@ -356,10 +406,18 @@ export class DashboardService {
     return this.http.get<RegimeEntry[]>(`${this.baseUrl}/regime`, options);
   }
 
-  getProtectionMetrics(symbol: string, account?: string, targetIncome?: number): Observable<ProtectionMetrics> {
+  getProtectionMetrics(
+    symbol: string,
+    account?: string,
+    targetIncome?: number,
+    expiryStart?: string,
+    expiryEnd?: string
+  ): Observable<ProtectionMetrics> {
     let params = new HttpParams().set('symbol', symbol);
     if (account) params = params.set('account', account);
     if (targetIncome !== undefined) params = params.set('target_income', targetIncome);
+    if (expiryStart) params = params.set('expiry_start', expiryStart);
+    if (expiryEnd) params = params.set('expiry_end', expiryEnd);
     return this.http.get<ProtectionMetrics>(`${this.baseUrl}/protection-metrics`, { params });
   }
 

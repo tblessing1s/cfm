@@ -349,19 +349,23 @@ export class AppComponent implements OnInit {
       this.stockDetail = undefined;
       return;
     }
+    const expiryStart = this.portfolioExpiryStart || undefined;
+    const expiryEnd = this.portfolioExpiryEnd || undefined;
     this.stockDetailLoading = true;
-    this.dashboardService.getStockDetail(ticker, this.selectedAccount, this.showClosedStocks).subscribe({
-      next: (detail) => {
-        this.stockDetail = detail;
-        this.stockDetailLoading = false;
-        this.loadProtection(ticker);
-        this.loadRegimes();
-      },
-      error: () => {
-        this.stockDetail = undefined;
-        this.stockDetailLoading = false;
-      },
-    });
+    this.dashboardService
+      .getStockDetail(ticker, this.selectedAccount, this.showClosedStocks, expiryStart, expiryEnd)
+      .subscribe({
+        next: (detail) => {
+          this.stockDetail = detail;
+          this.stockDetailLoading = false;
+          this.loadProtection(ticker);
+          this.loadRegimes();
+        },
+        error: () => {
+          this.stockDetail = undefined;
+          this.stockDetailLoading = false;
+        },
+      });
   }
 
   goToTradesForStock(ticker: string): void {
@@ -395,7 +399,9 @@ export class AppComponent implements OnInit {
     if (!this.selectedAccount) {
       return;
     }
-    this.dashboardService.getBusinessDashboard(this.selectedAccount).subscribe({
+    const expiryStart = this.portfolioExpiryStart || undefined;
+    const expiryEnd = this.portfolioExpiryEnd || undefined;
+    this.dashboardService.getBusinessDashboard(this.selectedAccount, expiryStart, expiryEnd).subscribe({
       next: (data) => {
         this.businessMetrics = data;
       },
@@ -403,26 +409,28 @@ export class AppComponent implements OnInit {
         this.businessMetrics = undefined;
       },
     });
-    this.dashboardService.listPositionMetrics(this.selectedAccount, this.showClosedBases).subscribe({
-      next: (rows) => {
-        this.positionMetrics = this.showClosedBases
-          ? rows
-          : rows.filter((pm) => !pm.position.closed_date);
-        // Ensure selectedPositionId stays valid
-        if (this.selectedPositionId) {
-          const exists = rows.some((pm) => pm.position.position_id === this.selectedPositionId);
-          if (!exists) {
-            this.selectedPositionId = undefined;
+    this.dashboardService
+      .listPositionMetrics(this.selectedAccount, this.showClosedBases, expiryStart, expiryEnd)
+      .subscribe({
+        next: (rows) => {
+          this.positionMetrics = this.showClosedBases
+            ? rows
+            : rows.filter((pm) => !pm.position.closed_date);
+          // Ensure selectedPositionId stays valid
+          if (this.selectedPositionId) {
+            const exists = rows.some((pm) => pm.position.position_id === this.selectedPositionId);
+            if (!exists) {
+              this.selectedPositionId = undefined;
+            }
           }
-        }
-        if (this.selectedPositionId) {
-          this.applyReserveDefault(this.selectedPositionId);
-        }
-      },
-      error: () => {
-        this.positionMetrics = [];
-      },
-    });
+          if (this.selectedPositionId) {
+            this.applyReserveDefault(this.selectedPositionId);
+          }
+        },
+        error: () => {
+          this.positionMetrics = [];
+        },
+      });
   }
 
   private computeConditions(): void {
@@ -462,7 +470,9 @@ export class AppComponent implements OnInit {
 
   loadProtection(symbol: string): void {
     if (!symbol) return;
-    this.dashboardService.getProtectionMetrics(symbol, this.selectedAccount).subscribe({
+    const expiryStart = this.portfolioExpiryStart || undefined;
+    const expiryEnd = this.portfolioExpiryEnd || undefined;
+    this.dashboardService.getProtectionMetrics(symbol, this.selectedAccount, undefined, expiryStart, expiryEnd).subscribe({
       next: (data) => (this.protection = data),
       error: () => (this.protection = undefined),
     });
@@ -687,6 +697,10 @@ export class AppComponent implements OnInit {
 
   onPortfolioExpiryRangeChange(): void {
     this.loadPortfolio();
+    this.loadBusiness();
+    if (this.selectedStock) {
+      this.selectStock(this.selectedStock);
+    }
   }
 
   stageTrade(): void {
