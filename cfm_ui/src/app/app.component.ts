@@ -1829,8 +1829,19 @@ export class AppComponent implements OnInit {
     return (value as number).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
 
-  private formatDisplay(_perContract: number | null, total: number | null, _mode?: string): string {
-    return this.formatNumber(total ?? null);
+  private formatDisplay(perContract: number | null, total: number | null, mode?: string): string {
+    const totalFormatted = this.formatNumber(total ?? null);
+    if (totalFormatted === '—') {
+      return totalFormatted;
+    }
+    if (mode === 'all_contracts_per100') {
+      const perFormatted = this.formatNumber(perContract ?? null);
+      if (perFormatted === '—') {
+        return totalFormatted;
+      }
+      return `${totalFormatted} (${perFormatted}/100)`;
+    }
+    return totalFormatted;
   }
 
   formatDetailValue(kind: 'premium' | 'juice' | 'protection', row: LedgerRow): string {

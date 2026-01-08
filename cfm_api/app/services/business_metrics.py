@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import timedelta, datetime
+import logging
 from typing import Optional, Tuple, List, Dict
 
 import numpy as np
@@ -20,6 +21,8 @@ from ..models.business import (
     RegimeEntry,
     ProtectionMetrics,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _week_bounds(anchor: pd.Timestamp) -> Tuple[pd.Timestamp, pd.Timestamp]:
@@ -284,6 +287,19 @@ def _net_intrinsic_for_position(
         prot = (premium_total - juice)
         if "close" in action:
             prot = -prot
+        logger.info(
+            "Net intrinsic calc: symbol=%s base_position_id=%s date=%s action=%s contracts=%s premium_buyback=%s "
+            "premium_total=%s signed_juice=%s protection=%s",
+            symbol,
+            base_position_id,
+            row.get("date"),
+            action,
+            contracts,
+            prem,
+            premium_total,
+            juice,
+            prot,
+        )
         return float(prot)
 
     return float(df.apply(_protection, axis=1).sum())
