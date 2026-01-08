@@ -20,6 +20,24 @@ import {
   RegimeEntry,
   ProtectionMetrics,
 } from './services/dashboard.service';
+import {
+  ExpiryMonthGroup,
+  ExpiryTotal,
+  LedgerSummary,
+  LedgerSortOrder,
+  buildLedgerSummaries,
+  calculateJuicePerContract,
+  calculateProtectionRaw,
+  calculateSignedJuiceRaw,
+  computeExpiryTotals,
+  extractBaseKey,
+  formatStrikeOption,
+  normalizeExpiryOption,
+  normalizeSideOption,
+  roundTo2,
+  sortLedgerRows,
+  sortSummaries,
+} from './utils/ledger-utils';
 
 interface LedgerDraft {
   account?: string;
@@ -34,39 +52,6 @@ interface LedgerDraft {
   premium?: number;
   condition?: string;
   base_position_id?: string;
-}
-
-interface LedgerSummary {
-  key: string;
-  ticker: string;
-  side: string;
-  strike: number;
-  expiry: string | null;
-  netContracts: number;
-  netPremium: number;
-  netJuice: number;
-  netJuicePer100: number;
-  netProtection: number;
-  rows: LedgerRow[];
-}
-
-interface ExpiryTotal {
-  expiry: string;
-  netContracts: number;
-  netPremium: number;
-  netJuice: number;
-  netJuicePer100: number;
-  netProtection: number;
-}
-
-interface ExpiryMonthGroup {
-  month: string;
-  netContracts: number;
-  netPremium: number;
-  netJuice: number;
-  netJuicePer100: number;
-  netProtection: number;
-  children: ExpiryTotal[];
 }
 
 @Component({
@@ -138,6 +123,7 @@ export class AppComponent implements OnInit {
   protection?: ProtectionMetrics;
   // Single display mode: always show totals and /100 for premium/juice/protection
   displayMode: 'all_contracts_per100' = 'all_contracts_per100';
+  private readonly contractMultiplier = 100;
   loading = true;
   error?: string;
   trades: Trade[] = [];
@@ -166,19 +152,7 @@ export class AppComponent implements OnInit {
   editingLedgerAccount?: string;
   expandedSummaries = new Set<string>();
   expandedExpiryMonths = new Set<string>();
-  ledgerSortOrder: Array<{
-    column:
-      | 'date'
-      | 'ticker'
-      | 'side'
-      | 'strike'
-      | 'expiry'
-      | 'netContracts'
-      | 'netPremium'
-      | 'netJuice'
-      | 'netJuicePer100';
-    direction: 'asc' | 'desc';
-  }> = [{ column: 'date', direction: 'desc' }];
+  ledgerSortOrder: LedgerSortOrder = [{ column: 'date', direction: 'desc' }];
   strategySuggestions: string[] = [];
   tickerSuggestions: string[] = [];
 
@@ -394,9 +368,9 @@ export class AppComponent implements OnInit {
     this.ledgerError = undefined;
     this.dashboardService.getLedger(account).subscribe({
       next: (rows) => {
-        this.ledgerRows = this.sortLedgerRows(rows);
+        this.ledgerRows = sortLedgerRows(rows);
         this.ledgerOpenBalances = this.computeOpenBalances(this.ledgerRows);
-        this.ledgerSummaries = this.buildLedgerSummaries(this.ledgerRows);
+        this.ledgerSummaries = buildLedgerSummaries(this.ledgerRows, this.contractMultiplier);
         this.refreshOpenShortOptions();
         this.updateLedgerFilterOptions(this.ledgerSummaries);
         this.ledgerPage = 1;
@@ -1281,11 +1255,11 @@ export class AppComponent implements OnInit {
   }
 
   get expiryTotals(): ExpiryTotal[] {
-    return this.computeExpiryTotals(this.filteredLedgerSummaries());
+    return computeExpiryTotals(this.filteredLedgerSummaries(), this.contractMultiplier);
   }
 
   get expiryMonthGroups(): ExpiryMonthGroup[] {
-    const totals = this.computeExpiryTotals(this.filteredLedgerSummaries());
+    const totals = computeExpiryTotals(this.filteredLedgerSummaries(), this.contractMultiplier);
     const groups: Record<string, ExpiryMonthGroup> = {};
 
     totals.forEach((total) => {
@@ -1313,7 +1287,7 @@ export class AppComponent implements OnInit {
       .map((group) => ({
         ...group,
         netJuicePer100: group.netJuice * 100,
-        netProtection: this.roundTo2(group.netProtection),
+        netProtection: roundTo2(group.netProtection),
         children: group.children.sort((a, b) => b.expiry.localeCompare(a.expiry)),
       }))
       .sort((a, b) => {
@@ -1795,14 +1769,6 @@ export class AppComponent implements OnInit {
     }
   }
 
-  private sortLedgerRows(rows: LedgerRow[]): LedgerRow[] {
-    return [...rows].sort((a, b) => {
-      const da = a.date ? new Date(a.date).getTime() : 0;
-      const db = b.date ? new Date(b.date).getTime() : 0;
-      return db - da;
-    });
-  }
-
   private updateLedgerFilterOptions(summaries: LedgerSummary[]): void {
     const tickers = new Set<string>();
     const sides = new Set<string>();
@@ -1813,15 +1779,15 @@ export class AppComponent implements OnInit {
       if (summary.ticker) {
         tickers.add(summary.ticker.toUpperCase());
       }
-      const side = this.normalizeSideOption(summary.side);
+      const side = normalizeSideOption(summary.side);
       if (side) {
         sides.add(side);
       }
-      const strike = this.formatStrikeOption(summary.strike);
+      const strike = formatStrikeOption(summary.strike);
       if (strike) {
         strikes.add(strike);
       }
-      const expiry = this.normalizeExpiryOption(summary.expiry);
+      const expiry = normalizeExpiryOption(summary.expiry);
       if (expiry) {
         expiries.add(expiry);
       }
@@ -1856,122 +1822,6 @@ export class AppComponent implements OnInit {
     }
   }
 
-  private normalizeSideOption(value: string | undefined): string {
-    if (!value) {
-      return '';
-    }
-    const normalized = value.trim().toLowerCase();
-    if (!normalized) {
-      return '';
-    }
-    if (normalized.includes('put')) {
-      return 'Put';
-    }
-    if (normalized.includes('call')) {
-      return 'Call';
-    }
-    return value.trim();
-  }
-
-  private formatStrikeOption(value: number | null | undefined): string {
-    if (!value || !Number.isFinite(value)) {
-      return '';
-    }
-    const rounded = Math.round(value * 100) / 100;
-    let label = rounded.toFixed(2);
-    label = label.replace(/\.00$/, '');
-    label = label.replace(/(\.\d)0$/, '$1');
-    return label;
-  }
-
-  private normalizeExpiryOption(value: string | null | undefined): string {
-    const trimmed = (value || '').trim();
-    return trimmed || '—';
-  }
-
-  private calculateJuicePerContractRaw(row: LedgerRow): number | null {
-    const premium = this.toNumber(row.premium_buyback);
-    if (premium === undefined) {
-      return null;
-    }
-    const strike = this.toNumber(row.strike);
-    const underlying = this.toNumber(row.underlying);
-    const side = (row.side || '').toString().toLowerCase();
-    const isPut = side.includes('put');
-    const action = (row.action || '').toString().toLowerCase();
-    const isClose = action.includes('close');
-
-    let juice: number;
-    if (strike !== undefined && underlying !== undefined) {
-      const intrinsic = isPut ? Math.max(0, strike - underlying) : Math.max(0, underlying - strike);
-      const extrinsic = premium - intrinsic;
-      juice = isClose ? (extrinsic < 0 ? Math.abs(extrinsic) : -extrinsic) : extrinsic;
-    } else {
-      juice = isClose ? (premium < 0 ? Math.abs(premium) : -premium) : premium;
-    }
-
-    return this.roundTo2(juice);
-  }
-
-  calculateJuicePerContract(row: LedgerRow): number | null {
-    const raw = this.calculateJuicePerContractRaw(row);
-    if (raw === null) {
-      return null;
-    }
-    return this.roundTo2(Math.abs(raw));
-  }
-
-  private calculateSignedJuiceRaw(row: LedgerRow): number | null {
-    const perContract = this.calculateJuicePerContractRaw(row);
-    if (perContract === null) {
-      return null;
-    }
-    const contracts = this.toNumber(row.contracts);
-    if (contracts === undefined) {
-      return null;
-    }
-    return this.roundTo2(perContract * contracts);
-  }
-
-  calculateSignedJuice(row: LedgerRow): number | null {
-    const raw = this.calculateSignedJuiceRaw(row);
-    if (raw === null) {
-      return null;
-    }
-    return this.roundTo2(Math.abs(raw));
-  }
-
-  calculateSignedJuicePer100(row: LedgerRow): number | null {
-    const signed = this.calculateSignedJuiceRaw(row);
-    if (signed === null) {
-      return null;
-    }
-    return this.roundTo2(signed * 100);
-  }
-
-  private calculateProtectionRaw(row: LedgerRow): number | null {
-    const juiceRaw = this.calculateSignedJuiceRaw(row);
-    const premium = this.toNumber(row.premium_buyback);
-    const contracts = this.toNumber(row.contracts) ?? 0;
-    if (juiceRaw === null || premium === undefined) {
-      return null;
-    }
-    const juiceAbs = Math.abs(juiceRaw);
-    const premiumTotal = premium * contracts;
-    const action = (row.action || '').toString().toLowerCase();
-    const isClose = action.includes('close');
-    const protection = juiceAbs - premiumTotal;
-    return this.roundTo2(isClose ? -protection : protection);
-  }
-
-  calculateProtection(row: LedgerRow): number | null {
-    const raw = this.calculateProtectionRaw(row);
-    if (raw === null) {
-      return null;
-    }
-    return this.roundTo2(Math.abs(raw));
-  }
-
   private formatNumber(value: number | null | undefined, digits: string = '1.2-2'): string {
     if (value === null || value === undefined || isNaN(value as number)) {
       return '—';
@@ -1979,25 +1829,25 @@ export class AppComponent implements OnInit {
     return (value as number).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
 
-  private formatDisplay(perContract: number | null, total: number | null, _mode?: string): string {
-    const tot = total ?? null;
-    return `${this.formatNumber(tot)} | ${this.formatNumber(tot !== null ? tot * 100 : null)}`;
+  private formatDisplay(_perContract: number | null, total: number | null, _mode?: string): string {
+    return this.formatNumber(total ?? null);
   }
 
   formatDetailValue(kind: 'premium' | 'juice' | 'protection', row: LedgerRow): string {
     const contracts = this.toNumber(row.contracts) ?? 0;
     if (kind === 'premium') {
       const per = this.toNumber(row.premium_buyback) ?? null;
-      const total = per !== null ? per * contracts : null;
-      return this.formatDisplay(per, total, this.displayMode);
+      const perContract = per !== null ? per * this.contractMultiplier : null;
+      const total = per !== null ? per * contracts * this.contractMultiplier : null;
+      return this.formatDisplay(perContract, total, this.displayMode);
     }
     if (kind === 'juice') {
-      const per = this.calculateJuicePerContract(row);
-      const total = this.calculateSignedJuiceRaw(row);
+      const per = calculateJuicePerContract(row, this.contractMultiplier);
+      const total = calculateSignedJuiceRaw(row, this.contractMultiplier);
       return this.formatDisplay(per, total !== null ? Math.abs(total) : null, this.displayMode);
     }
     // protection
-    const protRaw = this.calculateProtectionRaw(row);
+    const protRaw = calculateProtectionRaw(row, this.contractMultiplier);
     const totalProt = protRaw !== null ? Math.abs(protRaw) : null;
     const perProt = contracts ? (totalProt !== null ? totalProt / Math.abs(contracts) : null) : totalProt;
     return this.formatDisplay(perProt, totalProt, this.displayMode);
@@ -2032,10 +1882,6 @@ export class AppComponent implements OnInit {
     return this.formatDisplay(perProt, summary.netProtection, 'all_contracts_per100');
   }
 
-  private roundTo2(value: number): number {
-    return Math.round(value * 100) / 100;
-  }
-
   private filteredLedgerRows(): LedgerRow[] {
     if (!this.ledgerOpenOnly) {
       return this.ledgerRows;
@@ -2046,7 +1892,7 @@ export class AppComponent implements OnInit {
         .map(([key]) => key)
     );
     return this.ledgerRows.filter((row) => {
-      const baseKey = this.extractBaseKey(row);
+      const baseKey = extractBaseKey(row);
       if (!baseKey || !openBaseKeys.has(baseKey)) {
         return false;
       }
@@ -2063,30 +1909,30 @@ export class AppComponent implements OnInit {
     }
     if (this.selectedSides.length) {
       const selected = new Set(this.selectedSides);
-      summaries = summaries.filter((summary) => selected.has(this.normalizeSideOption(summary.side)));
+      summaries = summaries.filter((summary) => selected.has(normalizeSideOption(summary.side)));
     }
     if (this.selectedStrikes.length) {
       const selected = new Set(this.selectedStrikes);
       summaries = summaries.filter((summary) =>
-        selected.has(this.formatStrikeOption(summary.strike))
+        selected.has(formatStrikeOption(summary.strike))
       );
     }
     if (this.selectedExpiries.length) {
       const selected = new Set(this.selectedExpiries);
       summaries = summaries.filter((summary) =>
-        selected.has(this.normalizeExpiryOption(summary.expiry))
+        selected.has(normalizeExpiryOption(summary.expiry))
       );
     }
     if (this.ledgerOpenOnly) {
       summaries = summaries.filter((summary) => summary.netContracts > 0);
     }
-    return this.sortSummaries(summaries);
+    return sortSummaries(summaries, this.ledgerSortOrder);
   }
 
   private computeOpenBalances(rows: LedgerRow[]): Record<string, { remaining: number; row: LedgerRow }> {
     const balances: Record<string, { remaining: number; row: LedgerRow }> = {};
     rows.forEach((row) => {
-      const baseKey = this.extractBaseKey(row);
+      const baseKey = extractBaseKey(row);
       if (!baseKey) {
         return;
       }
@@ -2174,179 +2020,4 @@ export class AppComponent implements OnInit {
     // Keep ticker/strategy/side from base position locks already applied.
   }
 
-  private extractBaseKey(row: LedgerRow): string | null {
-    if (row.key) {
-      const parts = row.key.split('|');
-      if (parts.length >= 4) {
-        return parts.slice(0, 4).join('|');
-      }
-    }
-    if (row.ticker && row.strike !== undefined && row.expiry && row.side) {
-      return `${row.ticker}|${row.strike}|${row.expiry}|${row.side}`.toUpperCase();
-    }
-    return null;
-  }
-
-  private buildLedgerSummaries(rows: LedgerRow[]): LedgerSummary[] {
-    const groups: Record<string, LedgerSummary> = {};
-
-    rows.forEach((row) => {
-      const baseKey = this.extractBaseKey(row);
-      if (!baseKey) {
-        return;
-      }
-
-      const action = (row.action || '').toLowerCase();
-      const isClose = action.includes('close');
-      const contracts = Number(row.contracts || 0);
-      const premium = Number(row.premium_buyback || 0);
-      const signedJuiceRaw = this.calculateSignedJuiceRaw(row) ?? 0;
-      const protectionRaw = this.calculateProtectionRaw(row) ?? 0;
-
-      if (!groups[baseKey]) {
-        groups[baseKey] = {
-          key: baseKey,
-          ticker: row.ticker,
-          side: row.side || '',
-          strike: row.strike || 0,
-          expiry: row.expiry || null,
-          netContracts: 0,
-          netPremium: 0,
-          netJuice: 0,
-          netJuicePer100: 0,
-          netProtection: 0,
-          rows: [],
-        };
-      }
-
-      const summary = groups[baseKey];
-      const contractDelta = isClose ? -contracts : contracts;
-      const premiumTotal = premium * contracts;
-      const premiumDelta = isClose ? -premiumTotal : premiumTotal;
-      const protectionDelta = isClose ? -Math.abs(protectionRaw) : Math.abs(protectionRaw);
-      const juiceDelta = signedJuiceRaw;
-
-      summary.netContracts += contractDelta;
-      summary.netPremium += premiumDelta;
-      summary.netJuice += juiceDelta;
-      summary.netProtection += protectionDelta;
-      summary.rows.push(row);
-    });
-
-    Object.values(groups).forEach((summary) => {
-      summary.netJuice = this.roundTo2(summary.netJuice);
-      summary.netPremium = this.roundTo2(summary.netPremium);
-      summary.netProtection = this.roundTo2(summary.netProtection);
-      summary.netJuicePer100 = this.roundTo2(summary.netJuice * 100);
-    });
-
-    return Object.values(groups);
-  }
-
-  private computeExpiryTotals(summaries: LedgerSummary[]): ExpiryTotal[] {
-    const grouped: Record<string, ExpiryTotal> = {};
-    summaries.forEach((summary) => {
-      // Only include fully paired positions (netContracts == 0) in expiry totals.
-      if (summary.netContracts !== 0) {
-        return;
-      }
-
-      const key = summary.expiry || '—';
-      if (!grouped[key]) {
-        grouped[key] = {
-          expiry: key,
-          netContracts: 0,
-          netPremium: 0,
-          netJuice: 0,
-          netJuicePer100: 0,
-          netProtection: 0,
-        };
-      }
-      const bucket = grouped[key];
-      bucket.netContracts += summary.netContracts;
-      bucket.netPremium += summary.netPremium;
-      bucket.netJuice += summary.netJuice;
-      bucket.netProtection += summary.netProtection;
-    });
-
-    return Object.values(grouped)
-      .map((item) => ({
-        ...item,
-        netJuicePer100: item.netJuice * 100,
-        netProtection: this.roundTo2(item.netProtection),
-      }))
-      .sort((a, b) => {
-        if (a.expiry === '—') return 1;
-        if (b.expiry === '—') return -1;
-        return b.expiry.localeCompare(a.expiry);
-      });
-  }
-
-  private sortSummaries(list: LedgerSummary[]): LedgerSummary[] {
-    const orders = this.ledgerSortOrder;
-    const sorted = [...list].sort((a, b) => {
-      for (const { column, direction } of orders) {
-        const va = this.getSummarySortValue(a, column);
-        const vb = this.getSummarySortValue(b, column);
-
-        let cmp: number;
-        if (typeof va === 'number' && typeof vb === 'number') {
-          cmp = va - vb;
-        } else {
-          cmp = String(va ?? '').localeCompare(String(vb ?? ''), undefined, { sensitivity: 'base' });
-        }
-
-        if (cmp !== 0) {
-          return direction === 'asc' ? cmp : -cmp;
-        }
-      }
-
-      // Fallback: most recent date first
-      const da = this.getSummarySortValue(a, 'date') as number;
-      const db = this.getSummarySortValue(b, 'date') as number;
-      return db - da;
-    });
-
-    return sorted;
-  }
-
-  private getSummarySortValue(
-    summary: LedgerSummary,
-    column:
-      | 'date'
-      | 'ticker'
-      | 'side'
-      | 'strike'
-      | 'expiry'
-      | 'netContracts'
-      | 'netPremium'
-      | 'netJuice'
-      | 'netJuicePer100'
-  ): string | number {
-    switch (column) {
-      case 'ticker':
-        return summary.ticker || '';
-      case 'side':
-        return summary.side || '';
-      case 'strike':
-        return summary.strike ?? 0;
-      case 'expiry':
-        return summary.expiry || '';
-      case 'netContracts':
-        return summary.netContracts;
-      case 'netPremium':
-        return summary.netPremium;
-      case 'netJuice':
-        return summary.netJuice;
-      case 'netJuicePer100':
-        return summary.netJuicePer100;
-      case 'date':
-      default: {
-        const latest = summary.rows
-          .map((r) => (r.date ? new Date(r.date).getTime() : 0))
-          .reduce((max, curr) => Math.max(max, curr), 0);
-        return latest;
-      }
-    }
-  }
 }

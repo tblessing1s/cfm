@@ -81,6 +81,7 @@ def _net_juice_by_expiry_window(account: Optional[str], start: pd.Timestamp, end
 
 DEFAULT_RESERVE_PCT = 0.05
 FLOOR_BUFFER = 1.05  # minimum portfolio replacement ratio before allowing income
+CONTRACT_MULTIPLIER = 100  # options contract multiplier for full dollar amounts
 
 
 def _signed_juice_from_row(row: pd.Series) -> float | None:
@@ -98,14 +99,14 @@ def _signed_juice_from_row(row: pd.Series) -> float | None:
     is_put = "put" in side
     is_close = "close" in action
 
+
     if not pd.isna(strike) and not pd.isna(underlying):
         intrinsic = max(0, strike - underlying) if is_put else max(0, underlying - strike)
         extrinsic = premium - intrinsic
         juice_per_contract = abs(extrinsic) if (is_close and extrinsic < 0) else (-extrinsic if is_close else extrinsic)
     else:
         juice_per_contract = abs(premium) if (is_close and premium < 0) else (-premium if is_close else premium)
-
-    return round(float(juice_per_contract * contracts), 2)
+    return round(float(juice_per_contract * contracts * CONTRACT_MULTIPLIER), 2)
 
 
 def _net_juice_for_symbol(account: Optional[str], symbol: str) -> float:
@@ -279,8 +280,8 @@ def _net_intrinsic_for_position(
         action = str(row.get("action") or "").lower()
         if juice is None or prem is None or pd.isna(juice) or pd.isna(prem):
             return 0.0
-        premium_total = prem * contracts
-        prot = premium_total - juice
+        premium_total = prem * contracts * CONTRACT_MULTIPLIER
+        prot = (premium_total - juice)
         if "close" in action:
             prot = -prot
         return float(prot)
