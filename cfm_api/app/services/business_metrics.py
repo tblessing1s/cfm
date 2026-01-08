@@ -141,8 +141,8 @@ def _net_ledger_juice_for_symbol(account: Optional[str], symbol: str) -> float:
 def _ledger_income(account: Optional[str] = None, ticker: Optional[str] = None, base_position_id: Optional[str] = None) -> float:
     """
     Realized income from the ledger (same source as Trades & Ledger view).
-    Uses signed_juice_dollars or derives it per row; sums all rows (no extra filters)
-    so the dashboard matches the ledger totals.
+    Uses signed_juice_dollars or derives it per row; returns net juice
+    as open juice minus closed juice.
     """
     rows = excel_loader.get_ledger_rows(account)
     df = pd.DataFrame(rows)
@@ -161,7 +161,10 @@ def _ledger_income(account: Optional[str] = None, ticker: Optional[str] = None, 
     df = df.dropna(subset=["signed_juice_dollars"])
     if df.empty:
         return 0.0
-    return float(df["signed_juice_dollars"].sum())
+    action = df["action"].astype(str).str.lower()
+    open_juice = float(df.loc[action.str.contains("open", na=False), "signed_juice_dollars"].sum())
+    closed_juice = float(df.loc[action.str.contains("close", na=False), "signed_juice_dollars"].sum())
+    return open_juice - closed_juice
 
 
 def _income_after_base_protection(original_base: Optional[float], current_base: Optional[float], protection: Optional[float], income: float) -> float:
