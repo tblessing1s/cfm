@@ -313,8 +313,18 @@ export class DashboardService {
   }
 
   // Business dashboard
-  getBusinessDashboard(account?: string): Observable<BusinessDashboard> {
-    return this.http.get<BusinessDashboard>(`${this.baseUrl}/business-dashboard`, this._buildRequestOptions(account));
+  getBusinessDashboard(account?: string, expiryStart?: string, expiryEnd?: string): Observable<BusinessDashboard> {
+    let params = new HttpParams();
+    if (account) {
+      params = params.set('account', account);
+    }
+    if (expiryStart) {
+      params = params.set('expiry_start', expiryStart);
+    }
+    if (expiryEnd) {
+      params = params.set('expiry_end', expiryEnd);
+    }
+    return this.http.get<BusinessDashboard>(`${this.baseUrl}/business-dashboard`, params.keys().length ? { params } : {});
   }
 
   listPositionMetrics(account?: string, includeClosed: boolean = false): Observable<PositionMetrics[]> {
@@ -322,8 +332,21 @@ export class DashboardService {
     return this.http.get<PositionMetrics[]>(`${this.baseUrl}/positions`, options);
   }
 
-  getPortfolioSummary(account?: string, includeClosed?: boolean): Observable<PortfolioSummary> {
-    return this.http.get<PortfolioSummary>(`${this.baseUrl}/portfolio-summary`, this._buildRequestOptions(account, includeClosed));
+  getPortfolioSummary(account?: string, includeClosed?: boolean, expiryStart?: string, expiryEnd?: string): Observable<PortfolioSummary> {
+    let params = new HttpParams();
+    if (account) {
+      params = params.set('account', account);
+    }
+    if (includeClosed) {
+      params = params.set('include_closed', 'true');
+    }
+    if (expiryStart) {
+      params = params.set('expiry_start', expiryStart);
+    }
+    if (expiryEnd) {
+      params = params.set('expiry_end', expiryEnd);
+    }
+    return this.http.get<PortfolioSummary>(`${this.baseUrl}/portfolio-summary`, params.keys().length ? { params } : {});
   }
 
   listStocks(account?: string, includeClosed?: boolean): Observable<StockSummaryRow[]> {

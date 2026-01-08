@@ -26,16 +26,27 @@ router = APIRouter(tags=["business"])
 
 
 @router.get("/business-dashboard", response_model=BusinessDashboard)
-async def read_business_dashboard(account: str | None = Query(None, description="Account name or label")) -> BusinessDashboard:
-    return business_metrics.business_dashboard(account)
+async def read_business_dashboard(
+    account: str | None = Query(None, description="Account name or label"),
+    expiry_start: str | None = Query(None, description="Filter metrics from this option expiry (YYYY-MM-DD)"),
+    expiry_end: str | None = Query(None, description="Filter metrics through this option expiry (YYYY-MM-DD)"),
+) -> BusinessDashboard:
+    return business_metrics.business_dashboard(account, expiry_start=expiry_start, expiry_end=expiry_end)
 
 
 @router.get("/portfolio-summary", response_model=PortfolioSummary)
 async def read_portfolio_summary(
     account: str | None = Query(None, description="Account name or label"),
     include_closed: bool = Query(False, description="Include closed base positions"),
+    expiry_start: str | None = Query(None, description="Filter income metrics from this option expiry (YYYY-MM-DD)"),
+    expiry_end: str | None = Query(None, description="Filter income metrics through this option expiry (YYYY-MM-DD)"),
 ) -> PortfolioSummary:
-    return business_metrics.portfolio_summary(account, include_closed=include_closed)
+    return business_metrics.portfolio_summary(
+        account,
+        include_closed=include_closed,
+        expiry_start=expiry_start,
+        expiry_end=expiry_end,
+    )
 
 
 @router.get("/stocks", response_model=List[StockSummaryRow])
