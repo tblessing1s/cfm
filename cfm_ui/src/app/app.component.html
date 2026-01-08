@@ -49,18 +49,31 @@
               <input type="checkbox" [(ngModel)]="showAdvanced" />
               <span>Show advanced</span>
             </label>
-            <label class="portfolio-expiry">
-              <span>Expiry</span>
-              <select
-                class="input-control rounded-full px-4"
-                [value]="selectedPortfolioExpiry"
-                (change)="onPortfolioExpiryChange($event.target.value)">
-                <option value="">All expiries</option>
-                <option *ngFor="let expiry of portfolioExpiryOptions" [value]="expiry">
-                  {{ expiry }}
-                </option>
-              </select>
-            </label>
+            <div class="portfolio-expiry">
+              <span>Expiry range</span>
+              <div class="portfolio-expiry-fields">
+                <label>
+                  <span>Start</span>
+                  <input
+                    type="date"
+                    class="input-control"
+                    [min]="portfolioExpiryMin"
+                    [max]="portfolioExpiryMax"
+                    [(ngModel)]="portfolioExpiryStart"
+                    (change)="onPortfolioExpiryRangeChange()" />
+                </label>
+                <label>
+                  <span>End</span>
+                  <input
+                    type="date"
+                    class="input-control"
+                    [min]="portfolioExpiryMin"
+                    [max]="portfolioExpiryMax"
+                    [(ngModel)]="portfolioExpiryEnd"
+                    (change)="onPortfolioExpiryRangeChange()" />
+                </label>
+              </div>
+            </div>
           </div>
         </div>
         <div class="metric-grid">

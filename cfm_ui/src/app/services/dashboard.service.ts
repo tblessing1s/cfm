@@ -322,7 +322,7 @@ export class DashboardService {
     return this.http.get<PositionMetrics[]>(`${this.baseUrl}/positions`, options);
   }
 
-  getPortfolioSummary(account?: string, includeClosed?: boolean, expiry?: string): Observable<PortfolioSummary> {
+  getPortfolioSummary(account?: string, includeClosed?: boolean, expiryStart?: string, expiryEnd?: string): Observable<PortfolioSummary> {
     let params = new HttpParams();
     if (account) {
       params = params.set('account', account);
@@ -330,8 +330,11 @@ export class DashboardService {
     if (includeClosed) {
       params = params.set('include_closed', 'true');
     }
-    if (expiry) {
-      params = params.set('expiry', expiry);
+    if (expiryStart) {
+      params = params.set('expiry_start', expiryStart);
+    }
+    if (expiryEnd) {
+      params = params.set('expiry_end', expiryEnd);
     }
     return this.http.get<PortfolioSummary>(`${this.baseUrl}/portfolio-summary`, params.keys().length ? { params } : {});
   }

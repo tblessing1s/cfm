@@ -34,9 +34,15 @@ async def read_business_dashboard(account: str | None = Query(None, description=
 async def read_portfolio_summary(
     account: str | None = Query(None, description="Account name or label"),
     include_closed: bool = Query(False, description="Include closed base positions"),
-    expiry: str | None = Query(None, description="Filter income metrics to a specific option expiry (YYYY-MM-DD)"),
+    expiry_start: str | None = Query(None, description="Filter income metrics from this option expiry (YYYY-MM-DD)"),
+    expiry_end: str | None = Query(None, description="Filter income metrics through this option expiry (YYYY-MM-DD)"),
 ) -> PortfolioSummary:
-    return business_metrics.portfolio_summary(account, include_closed=include_closed, expiry=expiry)
+    return business_metrics.portfolio_summary(
+        account,
+        include_closed=include_closed,
+        expiry_start=expiry_start,
+        expiry_end=expiry_end,
+    )
 
 
 @router.get("/stocks", response_model=List[StockSummaryRow])
