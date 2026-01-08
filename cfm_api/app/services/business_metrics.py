@@ -287,7 +287,7 @@ def _net_intrinsic_for_position(
         prot = (premium_total - juice)
         if "close" in action:
             prot = -prot
-        logger.info(
+        logger.warning(
             "Net intrinsic calc: symbol=%s base_position_id=%s date=%s action=%s contracts=%s premium_buyback=%s "
             "premium_total=%s signed_juice=%s protection=%s",
             symbol,
