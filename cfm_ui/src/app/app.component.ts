@@ -67,6 +67,8 @@ export class AppComponent implements OnInit {
   businessMetrics?: BusinessDashboard;
   portfolioSummary?: PortfolioSummary;
   stockRows: StockSummaryRow[] = [];
+  portfolioExpiryOptions: string[] = [];
+  selectedPortfolioExpiry = '';
   selectedStock?: string;
   stockDetail?: StockDetail;
   stockDetailLoading = false;
@@ -318,7 +320,8 @@ export class AppComponent implements OnInit {
     if (!this.selectedAccount) {
       return;
     }
-    this.dashboardService.getPortfolioSummary(this.selectedAccount, this.showClosedStocks).subscribe({
+    const expiry = this.selectedPortfolioExpiry || undefined;
+    this.dashboardService.getPortfolioSummary(this.selectedAccount, this.showClosedStocks, expiry).subscribe({
       next: (summary) => {
         this.portfolioSummary = summary;
         this.stockRows = summary.stocks || [];
@@ -373,6 +376,7 @@ export class AppComponent implements OnInit {
         this.ledgerSummaries = buildLedgerSummaries(this.ledgerRows, this.contractMultiplier);
         this.refreshOpenShortOptions();
         this.updateLedgerFilterOptions(this.ledgerSummaries);
+        this.updatePortfolioExpiryOptions(this.ledgerRows);
         this.ledgerPage = 1;
         this.ledgerLoading = false;
       },
@@ -625,6 +629,8 @@ export class AppComponent implements OnInit {
     this.selectedSides = [];
     this.selectedStrikes = [];
     this.selectedExpiries = [];
+    this.selectedPortfolioExpiry = '';
+    this.portfolioExpiryOptions = [];
     this.metrics = undefined;
     this.loadMetrics();
     this.loadPortfolio();
@@ -672,6 +678,11 @@ export class AppComponent implements OnInit {
       !!this.tradeDraft.expiry &&
       premium !== undefined;
     return hasBasics;
+  }
+
+  onPortfolioExpiryChange(expiry: string): void {
+    this.selectedPortfolioExpiry = expiry;
+    this.loadPortfolio();
   }
 
   stageTrade(): void {
@@ -1819,6 +1830,25 @@ export class AppComponent implements OnInit {
     if (this.selectedExpiries.length) {
       const available = new Set(this.expiryFilterOptions);
       this.selectedExpiries = this.selectedExpiries.filter((expiry) => available.has(expiry));
+    }
+  }
+
+  private updatePortfolioExpiryOptions(rows: LedgerRow[]): void {
+    const expiries = new Set<string>();
+    rows.forEach((row) => {
+      if (!row.expiry) {
+        return;
+      }
+      const parsed = new Date(row.expiry);
+      if (Number.isNaN(parsed.getTime())) {
+        return;
+      }
+      expiries.add(parsed.toISOString().slice(0, 10));
+    });
+
+    this.portfolioExpiryOptions = Array.from(expiries).sort((a, b) => b.localeCompare(a));
+    if (this.selectedPortfolioExpiry && !this.portfolioExpiryOptions.includes(this.selectedPortfolioExpiry)) {
+      this.selectedPortfolioExpiry = '';
     }
   }
 

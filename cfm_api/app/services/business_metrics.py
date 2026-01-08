@@ -138,7 +138,21 @@ def _net_ledger_juice_for_symbol(account: Optional[str], symbol: str) -> float:
     return float(filtered["signed_juice_dollars"].sum())
 
 
-def _ledger_income(account: Optional[str] = None, ticker: Optional[str] = None, base_position_id: Optional[str] = None) -> float:
+def _normalize_expiry(expiry: Optional[str]) -> Optional[pd.Timestamp]:
+    if not expiry:
+        return None
+    parsed = pd.to_datetime(expiry, errors="coerce")
+    if pd.isna(parsed):
+        return None
+    return parsed.normalize()
+
+
+def _ledger_income(
+    account: Optional[str] = None,
+    ticker: Optional[str] = None,
+    base_position_id: Optional[str] = None,
+    expiry: Optional[pd.Timestamp] = None,
+) -> float:
     """
     Realized income from the ledger (same source as Trades & Ledger view).
     Uses signed_juice_dollars or derives it per row; returns net juice
@@ -153,6 +167,10 @@ def _ledger_income(account: Optional[str] = None, ticker: Optional[str] = None, 
     missing = df["signed_juice_dollars"].isna()
     if missing.any():
         df.loc[missing, "signed_juice_dollars"] = df.loc[missing].apply(_signed_juice_from_row, axis=1)
+    if "expiry" in df.columns:
+        df["expiry"] = pd.to_datetime(df.get("expiry"), errors="coerce")
+    if expiry is not None and "expiry" in df.columns:
+        df = df[df["expiry"].dt.normalize() == expiry]
     if ticker:
         df["ticker"] = df.get("ticker").astype(str).str.upper()
         df = df[df["ticker"] == ticker.upper()]
@@ -734,10 +752,11 @@ def _stock_income_consistency(account: Optional[str], ticker: str) -> float:
     return pct
 
 
-def stock_summary_rows(account: Optional[str] = None, include_closed: bool = False) -> List[StockSummaryRow]:
+def stock_summary_rows(account: Optional[str] = None, include_closed: bool = False, expiry: Optional[str] = None) -> List[StockSummaryRow]:
     """Aggregate per-stock rows for ranking tables."""
     pos_metrics = position_metrics(account, include_closed=include_closed)
     rows: List[StockSummaryRow] = []
+    expiry_ts = _normalize_expiry(expiry)
 
     for pm in pos_metrics:
         original_base_value = pm.initial_base_cost or pm.base_cost
@@ -749,7 +768,7 @@ def stock_summary_rows(account: Optional[str] = None, include_closed: bool = Fal
         if original_base_value:
             base_market_value_change = (current_base_value or 0) - original_base_value
             base_growth_pct = _safe_ratio(base_market_value_change, original_base_value)
-        raw_income = _ledger_income(account, pm.position.symbol, base_position_id=pm.position.position_id)
+        raw_income = _ledger_income(account, pm.position.symbol, base_position_id=pm.position.position_id, expiry=expiry_ts)
         income_total_realized = _income_after_base_protection(original_base_value, current_base_value, protection, raw_income)
         gap, applied, income_after, juice_needed = _protection_allocation(original_base_value, current_base_value, protection, raw_income)
         income_efficiency = _safe_ratio(income_total_realized, original_base_value)
@@ -789,9 +808,9 @@ def stock_summary_rows(account: Optional[str] = None, include_closed: bool = Fal
     return rows
 
 
-def portfolio_summary(account: Optional[str] = None, include_closed: bool = False) -> PortfolioSummary:
+def portfolio_summary(account: Optional[str] = None, include_closed: bool = False, expiry: Optional[str] = None) -> PortfolioSummary:
     """Compute portfolio-level KPIs and ranked stock rows."""
-    rows = stock_summary_rows(account, include_closed=include_closed)
+    rows = stock_summary_rows(account, include_closed=include_closed, expiry=expiry)
     snapshots = business_loader.list_nav(account)
     latest_nav = _latest(snapshots, "date")
     total_account_value = _to_float(latest_nav["nav_total"]) if latest_nav is not None else None
