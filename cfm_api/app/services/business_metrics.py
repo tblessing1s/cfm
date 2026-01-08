@@ -106,11 +106,11 @@ def _signed_juice_from_row(row: pd.Series) -> float | None:
     if not pd.isna(strike) and not pd.isna(underlying):
         intrinsic = max(0, strike - underlying) if is_put else max(0, underlying - strike)
         extrinsic = premium - intrinsic
-        if is_close:
-            extrinsic = max(0, extrinsic)
-        juice_per_contract = -extrinsic if is_close else extrinsic
     else:
-        juice_per_contract = abs(premium) if (is_close and premium < 0) else (-premium if is_close else premium)
+        extrinsic = premium
+    if is_close:
+        extrinsic = max(0, extrinsic)
+    juice_per_contract = extrinsic
     return round(float(juice_per_contract * contracts * CONTRACT_MULTIPLIER), 2)
 
 
