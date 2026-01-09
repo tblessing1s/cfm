@@ -180,6 +180,7 @@ export class AppComponent implements OnInit {
   strategyOptions = ['CFM', 'JL', 'DD', 'OTHER'];
   baseLegDraft: BaseLeg = this.buildBlankBaseLeg();
   baseLegOptions: BaseLeg[] = [];
+  baseLegLookup: Record<string, { open?: BaseLeg; mark?: BaseLeg }> = {};
   selectedBaseLegId: string = '';
   baseLegDateTime?: string;
   legSideOptions = ['BUY', 'SELL'];
@@ -905,6 +906,7 @@ export class AppComponent implements OnInit {
     this.replacementDraft.position_id = pid;
     this.selectedBaseLegId = '';
     this.baseLegOptions = [];
+    this.baseLegLookup = {};
     if (this.selectedDataForm === 'leg' && pid) {
       this.loadBaseLegOptions(pid);
     }
@@ -964,9 +966,7 @@ export class AppComponent implements OnInit {
     const qty = this.toNumber(this.baseLegDraft.quantity) || 0;
     const price = this.toNumber(this.baseLegDraft.price) || 0;
     const fees = this.toNumber(this.baseLegDraft.fees) || 0;
-    const instr = (this.baseLegDraft.instrument_type || '').toString().toUpperCase();
-    const mult = instr === 'OPTION' ? 100 : 1;
-    const gross = Math.abs(price * qty * mult);
+    const gross = Math.abs(price * qty * 100);
     const total = gross + Math.abs(fees);
     this.baseLegDraft.amount = Math.round(total * 100) / 100;
   }
@@ -1700,6 +1700,7 @@ export class AppComponent implements OnInit {
   loadBaseLegOptions(positionId?: string): void {
     if (!positionId) {
       this.baseLegOptions = [];
+      this.baseLegLookup = {};
       return;
     }
     this.dashboardService.listBaseLegs(positionId).subscribe({
@@ -1717,12 +1718,14 @@ export class AppComponent implements OnInit {
           if (tag === 'OPEN') acc[id].net += qty;
           return acc;
         }, {});
+        this.baseLegLookup = grouped;
         this.baseLegOptions = Object.values(grouped)
           .filter((g) => g.open && g.mark && g.net > 0)
           .map((g) => g.open as BaseLeg);
       },
       error: () => {
         this.baseLegOptions = [];
+        this.baseLegLookup = {};
       },
     });
   }
@@ -1734,7 +1737,8 @@ export class AppComponent implements OnInit {
       this.baseLegDraft.position_id = this.selectedPositionId || '';
       return;
     }
-    const leg = this.baseLegOptions.find((l) => l.base_leg_id === legId);
+    const entry = this.baseLegLookup[legId];
+    const leg = entry?.mark || entry?.open;
     if (!leg) {
       return;
     }
@@ -1748,6 +1752,7 @@ export class AppComponent implements OnInit {
       fees: leg.fees ?? 0,
     };
     this.baseLegDateTime = `${today}T09:30`;
+    this.recomputeBaseLegAmount();
   }
 
   private buildBlankReserve(): ReserveRow {

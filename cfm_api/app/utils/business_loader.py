@@ -355,6 +355,8 @@ def add_base_leg(payload: Dict[str, Any]) -> Dict[str, Any]:
     instr = str(payload.get("instrument_type") or "").upper()
     mult = 100.0 if (instr == "" or instr == "OPTION") else 1.0
     tag_val = str(payload.get("tag") or "").upper()
+    if tag_val == "MARK":
+        mult = 100.0
     # If this is a MARK and qty is missing, reuse qty from the last leg for this base_leg_id (or position)
     if (qty is None or qty == "" or qty == 0) and tag_val == "MARK":
         try:
@@ -371,6 +373,8 @@ def add_base_leg(payload: Dict[str, Any]) -> Dict[str, Any]:
                     if (instr == "" or instr is None) and prev.get("instrument_type"):
                         instr = str(prev.get("instrument_type")).upper()
                     mult = 100.0 if ((instr or "").upper() in ("", "OPTION")) else 1.0
+                    if tag_val == "MARK":
+                        mult = 100.0
         except Exception:
             pass
     try:
