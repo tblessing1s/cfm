@@ -38,10 +38,36 @@
   <ng-container *ngIf="activePage === 'business'">
     <section class="entry-card">
       <div class="business-panel">
+        <div class="account-summary">
+          <div class="summary-chip">
+            <div class="chip-label">Total account value</div>
+            <div class="chip-value">{{ portfolioSummary?.total_account_value || 0 | number:'1.0-0' }}</div>
+          </div>
+          <div class="summary-chip">
+            <div class="chip-label">Total cash</div>
+            <div class="chip-value">{{ portfolioSummary?.total_cash || 0 | number:'1.0-0' }}</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <nav class="page-nav">
+      <button type="button" class="btn-nav" [class.active]="activeBusinessView === 'snapshot'" (click)="setBusinessView('snapshot')">
+        Snapshot (Open Legs Only)
+      </button>
+      <button type="button" class="btn-nav" [class.active]="activeBusinessView === 'cashflow'" (click)="setBusinessView('cashflow')">
+        Cashflow (Realized Trades)
+      </button>
+    </nav>
+
+    <section class="entry-card">
+      <div class="business-panel">
         <div class="staged-header">
           <div>
-            <h2>Portfolio Overview</h2>
-            <p>Top-down view of Base Strength, Base Growth, and Income.</p>
+            <h2 *ngIf="activeBusinessView === 'snapshot'">Snapshot · Open Legs Only</h2>
+            <h2 *ngIf="activeBusinessView === 'cashflow'">Cashflow · Realized Trades</h2>
+            <p *ngIf="activeBusinessView === 'snapshot'">Measures base structure plus realized short intrinsic protection.</p>
+            <p *ngIf="activeBusinessView === 'cashflow'">Measures realized income only. No mark-to-market.</p>
           </div>
           <div class="entry-actions">
             <button type="button" class="btn btn-ghost" (click)="loadPortfolio()">Refresh</button>
@@ -76,48 +102,117 @@
             </div>
           </div>
         </div>
-        <div class="metric-grid">
+        <div class="metric-grid" *ngIf="activeBusinessView === 'snapshot'">
           <div class="metric-card">
-            <div class="metric-label">Total account value</div>
-            <div class="metric-value">{{ portfolioSummary?.total_account_value || 0 | number:'1.0-0' }}</div>
+            <div class="metric-label">Base value</div>
+            <div class="metric-value">{{ portfolioSummary?.total_current_base_value || 0 | number:'1.0-0' }}</div>
+            <div class="metric-sub">Initial {{ portfolioSummary?.total_base_value_initial || 0 | number:'1.0-0' }}</div>
+            <div class="metric-help">Current vs initial base premium.</div>
           </div>
           <div class="metric-card">
-            <div class="metric-label">Total cash</div>
-            <div class="metric-value">{{ portfolioSummary?.total_cash || 0 | number:'1.0-0' }}</div>
-            <div class="metric-help">Latest NAV cash balance.</div>
+            <div class="metric-label">Intrinsic value</div>
+            <div class="metric-value">{{ portfolioSummary?.total_current_base_intrinsic || 0 | number:'1.0-0' }}</div>
+            <div class="metric-sub">Initial {{ portfolioSummary?.total_initial_base_intrinsic || 0 | number:'1.0-0' }}</div>
+            <div class="metric-help">Current vs initial intrinsic.</div>
           </div>
           <div class="metric-card">
-            <div class="metric-label">Base Strength</div>
-            <div class="metric-value">{{ portfolioSummary?.total_base_strength_ratio || 0 | number:'1.2-2' }}</div>
-            <div class="metric-help">Weighted (current base + protection) / original.</div>
-          </div>
-          <div class="metric-card">
-            <div class="metric-label">Initial base value</div>
-            <div class="metric-value">{{ portfolioSummary?.total_base_value_initial || 0 | number:'1.0-0' }}</div>
-            <div class="metric-help">Sum of long cost basis.</div>
-          </div>
-          <div class="metric-card">
-            <div class="metric-label">Base + Protection</div>
-            <div class="metric-value">{{ portfolioSummary?.total_base_plus_protection || 0 | number:'1.0-0' }}</div>
-            <div class="metric-help">
-              Current base {{ portfolioSummary?.total_current_base_value || 0 | number:'1.0-0' }},
-              Protection {{ portfolioSummary?.total_protection_collected || 0 | number:'1.0-0' }}.
+            <div class="metric-label">Extrinsic value</div>
+            <div class="metric-value">
+              {{
+                ((portfolioSummary?.total_initial_base_extrinsic || 0) - (portfolioSummary?.total_income_realized || 0))
+                  | number:'1.0-0'
+              }}
             </div>
+            <div class="metric-sub">Initial {{ portfolioSummary?.total_initial_base_extrinsic || 0 | number:'1.0-0' }}</div>
+            <div class="metric-sub">Net juice {{ portfolioSummary?.total_income_realized || 0 | number:'1.0-0' }}</div>
+            <div class="metric-help">Remaining extrinsic after net juice.</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Short intrinsic protection (net)</div>
+            <div class="metric-value">{{ portfolioSummary?.total_protection_collected || 0 | number:'1.0-0' }}</div>
+            <div class="metric-help">Open intrinsic − close intrinsic.</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Protected intrinsic total</div>
+            <div class="metric-value">
+              {{ ((portfolioSummary?.total_current_base_intrinsic || 0) + (portfolioSummary?.total_protection_collected || 0)) | number:'1.0-0' }}
+            </div>
+            <div class="metric-help">Compare to initial intrinsic.</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Intrinsic gap</div>
+            <div class="metric-value">{{ portfolioSummary?.total_protection_gap || 0 | number:'1.2-2' }}</div>
+            <div class="metric-help">Needed to restore initial intrinsic.</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Extrinsic loan</div>
+            <div class="metric-value">{{ portfolioSummary?.total_long_extrinsic_loan || 0 | number:'1.2-2' }}</div>
+            <div class="metric-help">Outstanding loan on long extrinsic.</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Extrinsic paid down</div>
+            <div class="metric-value">{{ portfolioSummary?.total_long_extrinsic_paid || 0 | number:'1.2-2' }}</div>
+            <div class="metric-help">Paid by short extrinsic.</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Extrinsic remaining</div>
+            <div class="metric-value">{{ portfolioSummary?.total_long_extrinsic_remaining || 0 | number:'1.2-2' }}</div>
+            <div class="metric-help">Loan still outstanding.</div>
+          </div>
+        </div>
+        <div class="metric-grid" *ngIf="activeBusinessView === 'cashflow'">
+          <div class="metric-card">
+            <div class="metric-label">Total realized income</div>
+            <div class="metric-value">{{ portfolioSummary?.total_income_realized || 0 | number:'1.2-2' }}</div>
+            <div class="metric-help">Closed/expired/rolled only.</div>
           </div>
           <div class="metric-card">
             <div class="metric-label">Net juice</div>
-            <div class="metric-value">{{ portfolioSummary?.total_income_realized || 0 | number:'1.2-2' }}</div>
-            <div class="metric-help">Sum of realized premium.</div>
+            <div class="metric-value">{{ businessMetrics?.weekly_net_juice || 0 | number: '1.2-2' }} (W)</div>
+            <div class="metric-sub">{{ businessMetrics?.monthly_net_juice || 0 | number: '1.2-2' }} (M)</div>
+            <div class="metric-help">Realized premium dollars.</div>
           </div>
           <div class="metric-card">
-            <div class="metric-label">Protection gap</div>
-            <div class="metric-value">{{ portfolioSummary?.total_protection_gap || 0 | number:'1.2-2' }}</div>
-            <div class="metric-help">How much coverage is needed to restore bases.</div>
+            <div class="metric-label">Juice Yield %</div>
+            <div class="metric-value">{{ businessMetrics?.weekly_juice_yield_pct || 0 | number: '1.1-1' }}% (W)</div>
+            <div class="metric-sub">{{ businessMetrics?.monthly_juice_yield_pct || 0 | number: '1.1-1' }}% (M)</div>
+            <div class="metric-help">Yield on NAV (realized only).</div>
           </div>
           <div class="metric-card">
-            <div class="metric-label">Income after protection</div>
-            <div class="metric-value">{{ portfolioSummary?.total_income_after_protection || 0 | number:'1.2-2' }}</div>
-            <div class="metric-help">Juice left after filling protection gap.</div>
+            <div class="metric-label">Distributable (W)</div>
+            <div class="metric-value" [class]="incomeClass(businessMetrics?.distributable_income_weekly, businessMetrics?.income_allowed_weekly)">
+              {{ businessMetrics?.distributable_income_weekly ?? 0 | number:'1.2-2' }}
+            </div>
+            <div class="metric-sub" [class]="incomeAllowedClass(businessMetrics?.income_allowed_weekly, businessMetrics?.distributable_income_weekly)">
+              {{ businessMetrics?.income_allowed_weekly ? 'Allowed' : 'Blocked' }}
+            </div>
+            <div class="metric-help">After reserve/base top-ups.</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Distributable (M)</div>
+            <div class="metric-value" [class]="incomeClass(businessMetrics?.distributable_income_monthly, businessMetrics?.income_allowed_monthly)">
+              {{ businessMetrics?.distributable_income_monthly ?? 0 | number:'1.2-2' }}
+            </div>
+            <div class="metric-sub" [class]="incomeAllowedClass(businessMetrics?.income_allowed_monthly, businessMetrics?.distributable_income_monthly)">
+              {{ businessMetrics?.income_allowed_monthly ? 'Allowed' : 'Blocked' }}
+            </div>
+            <div class="metric-help">Monthly paycheck check.</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Extrinsic paydown</div>
+            <div class="metric-value">{{ portfolioSummary?.total_long_extrinsic_paid || 0 | number:'1.2-2' }}</div>
+            <div class="metric-sub">Remaining {{ portfolioSummary?.total_long_extrinsic_remaining || 0 | number:'1.2-2' }}</div>
+            <div class="metric-help">Realized short extrinsic applied to long rent.</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Short extrinsic net</div>
+            <div class="metric-value">{{ portfolioSummary?.total_short_extrinsic_net || 0 | number:'1.2-2' }}</div>
+            <div class="metric-help">Open extrinsic − close extrinsic.</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Extrinsic income</div>
+            <div class="metric-value">{{ portfolioSummary?.total_long_extrinsic_income || 0 | number:'1.2-2' }}</div>
+            <div class="metric-help">After extrinsic loan is paid off.</div>
           </div>
         </div>
       </div>
@@ -127,8 +222,10 @@
       <div class="business-panel">
         <div class="staged-header">
           <div>
-            <h2>Stocks Ranked</h2>
-            <p class="text-muted">Click a row to drill into Stock Detail.</p>
+            <h2 *ngIf="activeBusinessView === 'snapshot'">Stocks Ranked · Snapshot</h2>
+            <h2 *ngIf="activeBusinessView === 'cashflow'">Stocks Ranked · Cashflow</h2>
+            <p class="text-muted" *ngIf="activeBusinessView === 'snapshot'">Open legs only. Click a row to drill into Stock Detail.</p>
+            <p class="text-muted" *ngIf="activeBusinessView === 'cashflow'">Realized trades only. Click a row to drill into Stock Detail.</p>
           </div>
           <div class="entry-actions">
             <label class="checkbox">
@@ -138,31 +235,55 @@
           </div>
         </div>
         <div class="table-wrapper rounded-lg border border-border bg-surface-2/40">
-          <table
+          <table *ngIf="activeBusinessView === 'snapshot'"
             class="w-full border-collapse text-sm [&_th]:px-2 [&_th]:py-2 [&_td]:px-2 [&_td]:py-2 [&_th]:text-left [&_td]:text-left [&_tbody_tr]:border-b [&_tbody_tr]:border-border [&_tbody_tr:nth-child(even)]:bg-surface-2">
             <thead class="text-xs uppercase tracking-wider text-muted">
               <tr>
                 <th>Ticker</th>
-                <th>Income</th>
-                <th>Income after prot.</th>
-                <th>Prot. gap</th>
-                <th>Income efficiency</th>
                 <th>Base strength</th>
                 <th>Base growth</th>
+                <th>Base + Short Intrinsic</th>
+                <th>Prot. gap</th>
+                <th>Current base</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let row of stockRows" (click)="selectStock(row.ticker)" class="cursor-pointer hover:bg-surface">
+                <td class="font-semibold">{{ row.ticker }}</td>
+                <td>{{ row.base_strength_ratio || 0 | number:'1.2-2' }}</td>
+                <td>{{ row.base_growth_pct || 0 | percent:'1.1-1' }}</td>
+                <td>{{ ((row.current_base_value || 0) + (row.total_protection_collected || 0)) | number:'1.0-0' }}</td>
+                <td>{{ row.protection_gap || 0 | number:'1.2-2' }}</td>
+                <td>{{ row.current_base_value || 0 | number:'1.0-0' }}</td>
+              </tr>
+              <tr *ngIf="!stockRows.length">
+                <td colspan="6" class="text-center text-muted py-3">No stocks yet.</td>
+              </tr>
+            </tbody>
+          </table>
+          <table *ngIf="activeBusinessView === 'cashflow'"
+            class="w-full border-collapse text-sm [&_th]:px-2 [&_th]:py-2 [&_td]:px-2 [&_td]:py-2 [&_th]:text-left [&_td]:text-left [&_tbody_tr]:border-b [&_tbody_tr]:border-border [&_tbody_tr:nth-child(even)]:bg-surface-2">
+            <thead class="text-xs uppercase tracking-wider text-muted">
+              <tr>
+                <th>Ticker</th>
+                <th>Total income</th>
+                <th>Weekly</th>
+                <th>Monthly</th>
+                <th>Efficiency</th>
+                <th>Consistency</th>
               </tr>
             </thead>
             <tbody>
               <tr *ngFor="let row of stockRows" (click)="selectStock(row.ticker)" class="cursor-pointer hover:bg-surface">
                 <td class="font-semibold">{{ row.ticker }}</td>
                 <td>{{ row.income_total_realized || 0 | number:'1.2-2' }}</td>
-                <td>{{ row.income_after_protection || 0 | number:'1.2-2' }}</td>
-                <td>{{ row.protection_gap || 0 | number:'1.2-2' }}</td>
+                <td>{{ row.income_rate_weekly || 0 | number:'1.2-2' }}</td>
+                <td>{{ row.income_rate_monthly || 0 | number:'1.2-2' }}</td>
                 <td>{{ row.income_efficiency || 0 | percent:'1.1-1' }}</td>
-                <td>{{ row.base_strength_ratio || 0 | number:'1.2-2' }}</td>
-                <td>{{ row.base_growth_pct || 0 | percent:'1.1-1' }}</td>
+                <td>{{ row.income_consistency_pct == null ? '—' : (row.income_consistency_pct | percent:'1.0-0') }}</td>
               </tr>
               <tr *ngIf="!stockRows.length">
-                <td colspan="7" class="text-center text-muted py-3">No stocks yet.</td>
+                <td colspan="6" class="text-center text-muted py-3">No stocks yet.</td>
               </tr>
             </tbody>
           </table>
@@ -184,50 +305,79 @@
         </div>
         <div *ngIf="stockDetailLoading" class="state small">Loading stock detail…</div>
         <ng-container *ngIf="!stockDetailLoading && stockDetail">
-          <div class="metric-grid">
+          <ng-container *ngIf="activeBusinessView === 'snapshot'; else cashflowDetail">
+            <div class="metric-grid">
             <div class="metric-card">
-              <div class="metric-label">Initial base value</div>
-              <div class="metric-value">{{ stockDetail?.original_base_value || 0 | number:'1.2-2' }}</div>
-              <div class="metric-help">Sum of open base leg amounts.</div>
+              <div class="metric-label">Base value</div>
+              <div class="metric-value">{{ stockDetail?.base_market_value || 0 | number:'1.2-2' }}</div>
+              <div class="metric-sub">Initial {{ stockDetail?.original_base_value || 0 | number:'1.2-2' }}</div>
+              <div class="metric-help">Current vs initial base premium.</div>
             </div>
             <div class="metric-card">
-              <div class="metric-label">Base + Protection</div>
+              <div class="metric-label">Intrinsic value</div>
+              <div class="metric-value">{{ stockDetail?.current_base_intrinsic || 0 | number:'1.2-2' }}</div>
+              <div class="metric-sub">Initial {{ stockDetail?.initial_base_intrinsic || 0 | number:'1.2-2' }}</div>
+              <div class="metric-help">Current vs initial intrinsic.</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Extrinsic value</div>
+              <div class="metric-value">
+                {{
+                  ((stockDetail?.initial_base_extrinsic || 0) - (stockDetail?.net_juice_total || 0))
+                    | number:'1.2-2'
+                }}
+              </div>
+              <div class="metric-sub">Initial {{ stockDetail?.initial_base_extrinsic || 0 | number:'1.2-2' }}</div>
+              <div class="metric-sub">Net juice {{ stockDetail?.net_juice_total || 0 | number:'1.2-2' }}</div>
+              <div class="metric-help">Remaining extrinsic after net juice.</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Base + Short Intrinsic</div>
               <div class="metric-value">{{ stockDetail?.base_plus_protection || 0 | number:'1.2-2' }}</div>
-              <div class="metric-help">Current base + protection collected.</div>
+              <div class="metric-help">
+                Base {{ stockDetail?.current_base_intrinsic || 0 | number:'1.2-2' }} · Short intrinsic
+                {{ stockDetail?.total_protection_collected || 0 | number:'1.2-2' }}
+              </div>
             </div>
             <div class="metric-card">
               <div class="metric-label">Base strength</div>
-              <div class="metric-value">{{ stockDetail?.base_strength_ratio || 0 | number:'1.2-2' }}</div>
-              <div class="metric-help">(Current base + protection) / original.</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-label">Net juice</div>
-              <div class="metric-value">{{ stockDetail?.net_juice_total || 0 | number:'1.2-2' }}</div>
-              <div class="metric-help">Total realized premium.</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-label">Protection gap</div>
-              <div class="metric-value">{{ stockDetail?.protection_gap || 0 | number:'1.2-2' }}</div>
-              <div class="metric-help">Coverage needed to restore base.</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-label">Income after protection</div>
-              <div class="metric-value">{{ stockDetail?.income_after_protection || 0 | number:'1.2-2' }}</div>
-              <div class="metric-help">Juice left after filling protection gap.</div>
+              <div class="metric-value">
+                {{
+                  baseStrengthStatus(
+                    (stockDetail?.initial_base_extrinsic || 0) - (stockDetail?.net_juice_total || 0),
+                    stockDetail?.protection_gap || 0
+                  )
+                }}
+              </div>
+              <div class="metric-sub">
+                Extrinsic remaining
+                {{
+                  ((stockDetail?.initial_base_extrinsic || 0) - (stockDetail?.net_juice_total || 0)) | number:'1.2-2'
+                }}
+                · Gap {{ stockDetail?.protection_gap || 0 | number:'1.2-2' }}
+              </div>
+              <div class="metric-help">
+                {{
+                  baseStrengthGuidance(
+                    (stockDetail?.initial_base_extrinsic || 0) - (stockDetail?.net_juice_total || 0),
+                    stockDetail?.protection_gap || 0
+                  )
+                }}
+              </div>
             </div>
           </div>
-          <div class="trades-panel">
-            <h3>Positions</h3>
-            <div *ngIf="!stockDetail?.positions?.length" class="state small">No positions logged.</div>
-            <div class="cards-grid" *ngIf="stockDetail?.positions?.length">
-              <div class="position-card" *ngFor="let pm of stockDetail?.positions">
-                <div class="card-head">
-                  <div>
-                    <div class="ticker">{{ pm.position.symbol }}</div>
-                    <div class="meta">{{ pm.position.strategy }} · {{ pm.position.base_type }}</div>
-                  </div>
-                  <div class="ratio">
-                    Base+Prot {{ pm.replacement_ratio || 0 | number:'1.2-2' }}
+            <div class="trades-panel">
+              <h3>Positions</h3>
+              <div *ngIf="!stockDetail?.positions?.length" class="state small">No positions logged.</div>
+              <div class="cards-grid" *ngIf="stockDetail?.positions?.length">
+                <div class="position-card" *ngFor="let pm of stockDetail?.positions">
+                  <div class="card-head">
+                    <div>
+                      <div class="ticker">{{ pm.position.symbol }}</div>
+                      <div class="meta">{{ pm.position.strategy }} · {{ pm.position.base_type }}</div>
+                    </div>
+                    <div class="ratio">
+                      Base+Prot {{ pm.replacement_ratio || 0 | number:'1.2-2' }}
                   </div>
                 </div>
                 <div class="metric-row">
@@ -235,22 +385,56 @@
                   <strong>{{ pm.base_value || 0 | number:'1.2-2' }}</strong>
                 </div>
                 <div class="metric-row">
-                  <span>Protection pulled</span>
+                  <span>Short intrinsic protection</span>
                   <strong>{{ pm.net_intrinsic_to_date || 0 | number:'1.2-2' }}</strong>
-                </div>
-                <div class="metric-row">
-                  <span>Net juice</span>
-                  <strong>{{ pm.net_juice_to_date || 0 | number:'1.2-2' }}</strong>
                 </div>
               </div>
             </div>
           </div>
+          </ng-container>
+          <ng-template #cashflowDetail>
+            <div class="metric-grid">
+              <div class="metric-card">
+                <div class="metric-label">Total realized income</div>
+                <div class="metric-value">{{ stockDetail?.income_total_realized || 0 | number:'1.2-2' }}</div>
+                <div class="metric-help">Closed/expired/rolled only.</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-label">Net juice</div>
+                <div class="metric-value">{{ stockDetail?.net_juice_total || 0 | number:'1.2-2' }}</div>
+                <div class="metric-help">Realized premium.</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-label">Income efficiency</div>
+                <div class="metric-value">{{ stockDetail?.income_efficiency || 0 | percent:'1.1-1' }}</div>
+                <div class="metric-help">Realized income vs base.</div>
+              </div>
+            </div>
+            <div class="trades-panel">
+              <h3>Income by position</h3>
+              <div *ngIf="!stockDetail?.positions?.length" class="state small">No positions logged.</div>
+              <div class="cards-grid" *ngIf="stockDetail?.positions?.length">
+                <div class="position-card" *ngFor="let pm of stockDetail?.positions">
+                  <div class="card-head">
+                    <div>
+                      <div class="ticker">{{ pm.position.symbol }}</div>
+                      <div class="meta">{{ pm.position.strategy }} · {{ pm.position.base_type }}</div>
+                    </div>
+                  </div>
+                  <div class="metric-row">
+                    <span>Net juice to date</span>
+                    <strong>{{ pm.net_juice_to_date || 0 | number:'1.2-2' }}</strong>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </ng-template>
         </ng-container>
       </div>
     </section>
 
 
-    <section class="entry-card" *ngIf="showAdvanced">
+    <section class="entry-card" *ngIf="showAdvanced && activeBusinessView === 'snapshot'">
       <div class="business-panel">
         <h2>Account Value</h2>
         <p class="text-muted">Total net liq with cash vs long-position breakdown.</p>
@@ -315,7 +499,7 @@
       </div>
     </section>
 
-    <section class="entry-card" *ngIf="showAdvanced">
+    <section class="entry-card" *ngIf="showAdvanced && activeBusinessView === 'snapshot'">
       <div class="business-panel">
         <h2>Base Health</h2>
         <div class="metric-grid">
@@ -327,7 +511,7 @@
             <div class="metric-help">Green ≥1.10; Yellow 1.00–1.09; Red &lt;1.00.</div>
           </div>
           <div class="metric-card">
-            <div class="metric-label">Base + Protection vs initial (Lowest)</div>
+            <div class="metric-label">Base + Short Intrinsic vs initial (Lowest)</div>
             <div class="metric-value" [class]="rrClass(businessMetrics?.worst_replacement_ratio)">
               {{ businessMetrics?.worst_replacement_ratio || 0 | number: '1.2-2' }}
             </div>
@@ -351,7 +535,7 @@
       </div>
     </section>
 
-    <section class="entry-card" *ngIf="showAdvanced">
+    <section class="entry-card" *ngIf="showAdvanced && activeBusinessView === 'cashflow'">
       <div class="business-panel">
         <h2>Short Income</h2>
         <div class="metric-grid">
@@ -395,7 +579,7 @@
       </div>
     </section>
 
-    <section class="trades-panel" *ngIf="showAdvanced">
+    <section class="trades-panel" *ngIf="showAdvanced && activeBusinessView === 'snapshot'">
       <div class="staged-header">
         <div>
           <h2>Per-Position Base Health</h2>
@@ -432,11 +616,11 @@
             <strong>{{ pm.base_value || 0 | number:'1.2-2' }}</strong>
           </div>
           <div class="metric-row">
-            <span>Protection pulled</span>
+            <span>Short intrinsic protection</span>
             <strong>{{ (pm.net_intrinsic_to_date || 0) | number:'1.2-2' }}</strong>
           </div>
           <div class="metric-row">
-            <span>Base + Protection</span>
+            <span>Base + Short Intrinsic</span>
             <strong>{{ pm.base_plus_protection || ((pm.base_value || 0) + (pm.net_intrinsic_to_date || 0)) | number:'1.2-2' }}</strong>
           </div>
           <div class="metric-row">
@@ -799,6 +983,16 @@
             </label>
             <label>
               <span class="label-row">
+                Instrument
+                <button type="button" class="help-icon" (click)="toggleHelp('leg_instrument')">?</button>
+              </span>
+              <select class="input-control" [(ngModel)]="baseLegDraft.instrument_type" (ngModelChange)="recomputeBaseLegAmount()">
+                <option *ngFor="let opt of legInstrumentOptions" [ngValue]="opt">{{ opt }}</option>
+              </select>
+              <div class="help-pop" *ngIf="visibleHelp === 'leg_instrument'">{{ fieldHelp.leg_instrument }}</div>
+            </label>
+            <label>
+              <span class="label-row">
                 Side
                 <button type="button" class="help-icon" (click)="toggleHelp('leg_side')">?</button>
               </span>
@@ -808,8 +1002,16 @@
               <div class="help-pop" *ngIf="visibleHelp === 'leg_side'">{{ fieldHelp.leg_side }}</div>
             </label>
             <label>Qty <input type="number" class="input-control" [(ngModel)]="baseLegDraft.quantity" (ngModelChange)="recomputeBaseLegAmount()" /></label>
-            <label>Strike <input type="number" class="input-control" [(ngModel)]="baseLegDraft.strike" /></label>
+            <label>Strike <input type="number" class="input-control" [(ngModel)]="baseLegDraft.strike" (ngModelChange)="recomputeBaseLegAmount()" /></label>
             <label>Expiry <input type="date" class="input-control" [(ngModel)]="baseLegDraft.expiry" /></label>
+            <label>
+              <span class="label-row">
+                Underlying price
+                <button type="button" class="help-icon" (click)="toggleHelp('leg_underlying')">?</button>
+              </span>
+              <input type="number" class="input-control" [(ngModel)]="baseLegDraft.underlying_price" (ngModelChange)="recomputeBaseLegAmount()" />
+              <div class="help-pop" *ngIf="visibleHelp === 'leg_underlying'">{{ fieldHelp.leg_underlying }}</div>
+            </label>
             <label>
               <span class="label-row">
                 Price
@@ -833,6 +1035,22 @@
               </span>
               <input type="number" class="input-control" [(ngModel)]="baseLegDraft.amount" readonly />
               <div class="help-pop" *ngIf="visibleHelp === 'leg_amount'">{{ fieldHelp.leg_amount }}</div>
+            </label>
+            <label>
+              <span class="label-row">
+                Intrinsic portion
+                <button type="button" class="help-icon" (click)="toggleHelp('leg_intrinsic')">?</button>
+              </span>
+              <input type="number" class="input-control" [value]="baseLegIntrinsicPreview ?? ''" readonly />
+              <div class="help-pop" *ngIf="visibleHelp === 'leg_intrinsic'">{{ fieldHelp.leg_intrinsic }}</div>
+            </label>
+            <label>
+              <span class="label-row">
+                Extrinsic portion
+                <button type="button" class="help-icon" (click)="toggleHelp('leg_extrinsic')">?</button>
+              </span>
+              <input type="number" class="input-control" [value]="baseLegExtrinsicPreview ?? ''" readonly />
+              <div class="help-pop" *ngIf="visibleHelp === 'leg_extrinsic'">{{ fieldHelp.leg_extrinsic }}</div>
             </label>
             <label>
               <span class="label-row">
@@ -882,16 +1100,16 @@
       </div>
 
       <div class="entry-grid">
-        <label *ngIf="positionMetrics.length">
-          <span>Base position</span>
+        <label *ngIf="tradeBaseLegOptions.length">
+          <span>Base leg</span>
           <select
             class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
-            [(ngModel)]="selectedTradePositionId"
-            (ngModelChange)="onTradePositionSelect($event)"
+            [(ngModel)]="selectedTradeBaseLegId"
+            (ngModelChange)="onTradeBaseLegSelect($event)"
           >
             <option [ngValue]="undefined">— None —</option>
-            <option *ngFor="let pm of positionMetrics" [ngValue]="pm.position.position_id">
-              {{ pm.position.symbol }} · {{ pm.position.strategy }} ({{ pm.position.base_type }})
+            <option *ngFor="let leg of tradeBaseLegOptions" [ngValue]="leg.base_leg_id">
+              {{ tradeBaseLegLabel(leg) }}
             </option>
           </select>
         </label>

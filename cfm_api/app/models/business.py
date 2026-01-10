@@ -43,6 +43,7 @@ class BaseLeg(BaseModel):
     strike: Optional[float] = None
     expiry: Optional[date] = None
     price: float
+    underlying_price: Optional[float] = None
     fees: float = 0.0
     amount: float
     tag: Optional[str] = None
@@ -75,10 +76,18 @@ class PositionMetrics(BaseModel):
     base_value: Optional[float] = None
     base_cost: Optional[float] = None
     initial_base_cost: Optional[float] = None
+    initial_base_intrinsic: Optional[float] = None
+    initial_base_extrinsic: Optional[float] = None
+    current_base_intrinsic: Optional[float] = None
     base_plus_protection: Optional[float] = None
     base_health_delta: Optional[float] = None
     net_juice_to_date: float = 0.0
     net_intrinsic_to_date: float = 0.0
+    short_extrinsic_net: Optional[float] = None
+    long_extrinsic_loan: Optional[float] = None
+    long_extrinsic_paid: Optional[float] = None
+    long_extrinsic_remaining: Optional[float] = None
+    long_extrinsic_income: Optional[float] = None
     replacement_cost: Optional[float] = None
     unit_replacement_cost: Optional[float] = None
     reserve_cash: float = 0.0
@@ -136,6 +145,9 @@ class StockSummaryRow(BaseModel):
     ticker: str
     original_base_value: Optional[float] = None
     current_base_value: Optional[float] = None
+    initial_base_intrinsic: Optional[float] = None
+    initial_base_extrinsic: Optional[float] = None
+    current_base_intrinsic: Optional[float] = None
     total_protection_collected: Optional[float] = None
     base_strength_ratio: Optional[float] = None
     base_market_value_change: Optional[float] = None
@@ -149,6 +161,11 @@ class StockSummaryRow(BaseModel):
     income_rate_monthly: Optional[float] = None
     income_efficiency: Optional[float] = None
     income_consistency_pct: Optional[float] = None
+    short_extrinsic_net: Optional[float] = None
+    long_extrinsic_loan: Optional[float] = None
+    long_extrinsic_paid: Optional[float] = None
+    long_extrinsic_remaining: Optional[float] = None
+    long_extrinsic_income: Optional[float] = None
     contribution_income_pct: Optional[float] = None
     contribution_protection_pct: Optional[float] = None
     contribution_growth_pct: Optional[float] = None
@@ -163,14 +180,32 @@ class StockDetail(BaseModel):
     income_efficiency: Optional[float] = None
     base_market_value: Optional[float] = None
     original_base_value: Optional[float] = None
+    initial_base_intrinsic: Optional[float] = None
+    initial_base_extrinsic: Optional[float] = None
+    current_base_intrinsic: Optional[float] = None
     base_plus_protection: Optional[float] = None
     total_protection_collected: Optional[float] = None
     protection_gap: Optional[float] = None
     net_juice_total: Optional[float] = None
+    short_extrinsic_net: Optional[float] = None
+    long_extrinsic_loan: Optional[float] = None
+    long_extrinsic_paid: Optional[float] = None
+    long_extrinsic_remaining: Optional[float] = None
+    long_extrinsic_income: Optional[float] = None
     income_series_weekly: list[PillarSeriesPoint] = Field(default_factory=list)
     base_strength_series_weekly: list[PillarSeriesPoint] = Field(default_factory=list)
     base_value_series_weekly: list[PillarSeriesPoint] = Field(default_factory=list)
     positions: list[PositionMetrics] = Field(default_factory=list)
+    short_leg_matches: list["ShortLegMatch"] = Field(default_factory=list)
+
+
+class ShortLegMatch(BaseModel):
+    base_leg_id: str
+    base_position_id: Optional[str] = None
+    base_leg_date: Optional[date] = None
+    base_leg_time: Optional[str] = None
+    short_count: int = 0
+    latest_short_date: Optional[datetime] = None
 
 
 class PortfolioSummary(BaseModel):
@@ -178,6 +213,9 @@ class PortfolioSummary(BaseModel):
     total_cash: Optional[float] = None
     total_base_value_initial: Optional[float] = None
     total_current_base_value: Optional[float] = None
+    total_initial_base_intrinsic: Optional[float] = None
+    total_initial_base_extrinsic: Optional[float] = None
+    total_current_base_intrinsic: Optional[float] = None
     total_protection_collected: Optional[float] = None
     total_base_plus_protection: Optional[float] = None
     total_income_realized: float = 0.0
@@ -186,6 +224,11 @@ class PortfolioSummary(BaseModel):
     total_juice_needed_for_protection: Optional[float] = None
     total_base_strength_ratio: Optional[float] = None
     total_base_growth_pct: Optional[float] = None
+    total_short_extrinsic_net: Optional[float] = None
+    total_long_extrinsic_loan: Optional[float] = None
+    total_long_extrinsic_paid: Optional[float] = None
+    total_long_extrinsic_remaining: Optional[float] = None
+    total_long_extrinsic_income: Optional[float] = None
     stocks: list[StockSummaryRow] = Field(default_factory=list)
 
 

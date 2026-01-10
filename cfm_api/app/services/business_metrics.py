@@ -71,6 +71,9 @@ def _ledger_by_expiry(account: Optional[str] = None, ticker: Optional[str] = Non
         df = df[df.get("base_position_id") == base_position_id]
 
     df = df.dropna(subset=["expiry", "signed_juice_dollars"])
+    if "action" in df.columns:
+        action = df["action"].astype(str).str.lower()
+        df = df[action.str.contains("close", na=False)]
     return df
 
 
@@ -172,8 +175,7 @@ def _ledger_income(
 ) -> float:
     """
     Realized income from the ledger (same source as Trades & Ledger view).
-    Uses signed_juice_dollars or derives it per row; returns net juice
-    as open juice minus closed juice.
+    Uses signed_juice_dollars or derives it per row; returns closed juice only.
     """
     rows = excel_loader.get_ledger_rows(account)
     df = pd.DataFrame(rows)
@@ -201,37 +203,311 @@ def _ledger_income(
     if df.empty:
         return 0.0
     action = df["action"].astype(str).str.lower()
-    open_juice = float(df.loc[action.str.contains("open", na=False), "signed_juice_dollars"].sum())
     closed_juice = float(df.loc[action.str.contains("close", na=False), "signed_juice_dollars"].sum())
-    return open_juice - closed_juice
+    return closed_juice
 
 
 def _income_after_base_protection(original_base: Optional[float], current_base: Optional[float], protection: Optional[float], income: float) -> float:
-    """
-    Gate income: premium first restores the base. Any shortfall to original base
-    is filled by net juice; only the excess beyond the shortfall is distributable.
-    """
-    if original_base in (None, 0):
-        return float(income)
-    coverage = (current_base or 0.0) + (protection or 0.0)
-    shortfall = max(0.0, float(original_base) - coverage)
-    return max(0.0, float(income) - shortfall)
+    """Income is realized; do not allocate it to protection."""
+    return float(income)
 
 
 def _protection_allocation(original_base: Optional[float], current_base: Optional[float], protection: Optional[float], income: float) -> Tuple[float, float, float, float]:
-    """
-    Allocate juice to protection first. Returns:
-    protection_gap, protection_juice_applied, income_after_protection, juice_needed_for_full_protection.
-    """
+    """Protection is structural; income is reported separately."""
     if original_base in (None, 0):
         return 0.0, 0.0, float(income), 0.0
     coverage = (current_base or 0.0) + (protection or 0.0)
     gap = max(0.0, float(original_base) - coverage)
-    income_pos = max(0.0, float(income))
-    applied = min(income_pos, gap)
-    income_after = float(income) - applied
-    juice_needed = max(0.0, gap - applied)
-    return gap, applied, income_after, juice_needed
+    return gap, 0.0, float(income), gap
+
+
+def _short_intrinsic_realized_for_position(
+    account: Optional[str],
+    symbol: str,
+    base_position_id: Optional[str] = None,
+    opened_date: Optional[pd.Timestamp] = None,
+    closed_date: Optional[pd.Timestamp] = None,
+    expiry_start: Optional[pd.Timestamp] = None,
+    expiry_end: Optional[pd.Timestamp] = None,
+) -> float:
+    """Net short intrinsic protection = open intrinsic - close intrinsic."""
+    rows = excel_loader.get_ledger_rows(account)
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return 0.0
+    if base_position_id:
+        df = df[df.get("base_position_id") == base_position_id]
+    else:
+        df["ticker"] = df["ticker"].astype(str).str.upper()
+        df = df[df["ticker"] == symbol.upper()]
+    if df.empty:
+        return 0.0
+    df["action"] = df.get("action", "").astype(str).str.lower()
+    df["date"] = pd.to_datetime(df.get("date"), errors="coerce")
+    if opened_date is not None:
+        df = df[df["date"] >= opened_date]
+    if closed_date is not None:
+        df = df[df["date"] <= closed_date]
+    if "expiry" in df.columns:
+        df["expiry"] = pd.to_datetime(df.get("expiry"), errors="coerce")
+    if (expiry_start is not None or expiry_end is not None) and "expiry" in df.columns:
+        normalized = df["expiry"].dt.normalize()
+        if expiry_start is not None:
+            df = df[normalized >= expiry_start]
+        if expiry_end is not None:
+            df = df[normalized <= expiry_end]
+    if df.empty:
+        return 0.0
+
+    df["contracts"] = pd.to_numeric(df.get("contracts"), errors="coerce")
+    df["strike"] = pd.to_numeric(df.get("strike"), errors="coerce")
+    df["underlying"] = pd.to_numeric(df.get("underlying"), errors="coerce")
+    df["side"] = df.get("side", "").astype(str).str.lower()
+
+    def _row_intrinsic(row: pd.Series) -> float:
+        contracts = row.get("contracts")
+        strike = row.get("strike")
+        underlying = row.get("underlying")
+        if pd.isna(contracts) or pd.isna(strike) or pd.isna(underlying):
+            return 0.0
+        is_put = "put" in (row.get("side") or "")
+        intrinsic_per = max(0.0, strike - underlying) if is_put else max(0.0, underlying - strike)
+        return float(intrinsic_per) * float(contracts) * CONTRACT_MULTIPLIER
+    open_intrinsic = float(df[df["action"].str.contains("open", na=False)].apply(_row_intrinsic, axis=1).sum())
+    close_intrinsic = float(df[df["action"].str.contains("close", na=False)].apply(_row_intrinsic, axis=1).sum())
+    return float(open_intrinsic - close_intrinsic)
+
+
+def _long_extrinsic_loan_from_legs(
+    legs: pd.DataFrame,
+    expiry_start: Optional[pd.Timestamp] = None,
+    expiry_end: Optional[pd.Timestamp] = None,
+) -> float:
+    """Compute long extrinsic loan from OPEN legs using underlying_price + strike + premium."""
+    if legs.empty:
+        return 0.0
+    legs = legs.copy()
+    if (expiry_start is not None or expiry_end is not None) and "expiry" in legs.columns:
+        legs["expiry"] = pd.to_datetime(legs.get("expiry"), errors="coerce")
+        normalized = legs["expiry"].dt.normalize()
+        if expiry_start is not None:
+            legs = legs[normalized >= expiry_start]
+        if expiry_end is not None:
+            legs = legs[normalized <= expiry_end]
+
+    if legs.empty:
+        return 0.0
+
+    net: Dict[str, float] = {}
+    for idx, row in legs.iterrows():
+        tag = str(row.get("tag") or "").upper()
+        leg_id = str(row.get("base_leg_id") or f"row-{idx}")
+        if tag == "MARK":
+            continue
+        side = str(row.get("side") or "").upper()
+        qty = pd.to_numeric(row.get("quantity"), errors="coerce")
+        if pd.isna(qty):
+            continue
+        delta = qty if side == "BUY" else -qty
+        net[leg_id] = net.get(leg_id, 0.0) + float(delta)
+
+    open_ids = {lid for lid, qty in net.items() if qty > 0}
+    if not open_ids:
+        return 0.0
+
+    opens = legs[(legs["tag"].astype(str).str.upper() == "OPEN") & legs["base_leg_id"].astype(str).isin(open_ids)]
+    if opens.empty:
+        return 0.0
+
+    total = 0.0
+    for leg_id, group in opens.groupby(opens["base_leg_id"].astype(str)):
+        if leg_id not in open_ids:
+            continue
+        row = group.sort_values(["date", "time"], na_position="last").iloc[0]
+        qty = net.get(leg_id, pd.to_numeric(row.get("quantity"), errors="coerce"))
+        if qty is None or pd.isna(qty) or qty <= 0:
+            continue
+        strike = pd.to_numeric(row.get("strike"), errors="coerce")
+        underlying = pd.to_numeric(row.get("underlying_price"), errors="coerce")
+        price = pd.to_numeric(row.get("price"), errors="coerce")
+        if pd.isna(strike) or pd.isna(underlying) or pd.isna(price):
+            continue
+        instr = str(row.get("instrument_type") or "").upper()
+        if instr in {"PUT", "OPTION_PUT", "PUT_OPTION"}:
+            intrinsic_per = max(0.0, strike - underlying)
+        elif instr in {"", "OPTION", "CALL", "OPTION_CALL", "CALL_OPTION"} or (instr == "SHARES" and row.get("expiry")):
+            intrinsic_per = max(0.0, underlying - strike)
+        else:
+            continue
+        extrinsic_per = max(0.0, float(price) - float(intrinsic_per))
+        total += float(extrinsic_per) * float(qty) * 100.0
+
+    return float(round(total, 2))
+
+
+def _initial_base_intrinsic_extrinsic_from_legs(
+    legs: pd.DataFrame,
+    expiry_start: Optional[pd.Timestamp] = None,
+    expiry_end: Optional[pd.Timestamp] = None,
+) -> Tuple[float, float]:
+    """Compute initial intrinsic/extrinsic from OPEN legs at entry."""
+    if legs.empty:
+        return 0.0, 0.0
+    legs = legs.copy()
+    if (expiry_start is not None or expiry_end is not None) and "expiry" in legs.columns:
+        legs["expiry"] = pd.to_datetime(legs.get("expiry"), errors="coerce")
+        normalized = legs["expiry"].dt.normalize()
+        if expiry_start is not None:
+            legs = legs[normalized >= expiry_start]
+        if expiry_end is not None:
+            legs = legs[normalized <= expiry_end]
+    if legs.empty:
+        return 0.0, 0.0
+    opens = legs[legs["tag"].astype(str).str.upper() == "OPEN"]
+    if opens.empty:
+        return 0.0, 0.0
+    marks = legs[legs["tag"].astype(str).str.upper() == "MARK"]
+    if marks.empty:
+        return 0.0, 0.0
+    valid_ids = set(marks["base_leg_id"].astype(str))
+    opens = opens[opens["base_leg_id"].astype(str).isin(valid_ids)]
+    if opens.empty:
+        return 0.0, 0.0
+    total_intrinsic = 0.0
+    total_extrinsic = 0.0
+    for _, row in opens.iterrows():
+        qty = pd.to_numeric(row.get("quantity"), errors="coerce")
+        strike = pd.to_numeric(row.get("strike"), errors="coerce")
+        underlying = pd.to_numeric(row.get("underlying_price"), errors="coerce")
+        price = pd.to_numeric(row.get("price"), errors="coerce")
+        if pd.isna(qty) or pd.isna(strike) or pd.isna(underlying) or pd.isna(price):
+            continue
+        instr = str(row.get("instrument_type") or "").upper()
+        if instr in {"PUT", "OPTION_PUT", "PUT_OPTION"}:
+            intrinsic_per = max(0.0, strike - underlying)
+        elif instr in {"", "OPTION", "CALL", "OPTION_CALL", "CALL_OPTION"} or (instr == "SHARES" and row.get("expiry")):
+            intrinsic_per = max(0.0, underlying - strike)
+        else:
+            continue
+        intrinsic_total = float(intrinsic_per) * float(qty) * 100.0
+        extrinsic_per = max(0.0, float(price) - float(intrinsic_per))
+        extrinsic_total = float(extrinsic_per) * float(qty) * 100.0
+        total_intrinsic += intrinsic_total
+        total_extrinsic += extrinsic_total
+    return float(round(total_intrinsic, 2)), float(round(total_extrinsic, 2))
+
+
+def _current_base_intrinsic_from_legs(
+    legs: pd.DataFrame,
+    expiry_start: Optional[pd.Timestamp] = None,
+    expiry_end: Optional[pd.Timestamp] = None,
+) -> float:
+    """Compute current intrinsic from MARK legs for open positions."""
+    if legs.empty:
+        return 0.0
+    legs = legs.copy()
+    if (expiry_start is not None or expiry_end is not None) and "expiry" in legs.columns:
+        legs["expiry"] = pd.to_datetime(legs.get("expiry"), errors="coerce")
+        normalized = legs["expiry"].dt.normalize()
+        if expiry_start is not None:
+            legs = legs[normalized >= expiry_start]
+        if expiry_end is not None:
+            legs = legs[normalized <= expiry_end]
+    if legs.empty:
+        return 0.0
+
+    net: Dict[str, float] = {}
+    has_mark: Dict[str, bool] = {}
+    for idx, row in legs.iterrows():
+        tag = str(row.get("tag") or "").upper()
+        leg_id = str(row.get("base_leg_id") or f"row-{idx}")
+        if tag == "MARK":
+            has_mark[leg_id] = True
+            continue
+        side = str(row.get("side") or "").upper()
+        qty = pd.to_numeric(row.get("quantity"), errors="coerce")
+        if pd.isna(qty):
+            continue
+        delta = qty if side == "BUY" else -qty
+        net[leg_id] = net.get(leg_id, 0.0) + float(delta)
+
+    open_ids = {lid for lid, qty in net.items() if qty > 0 and has_mark.get(lid)}
+    if not open_ids:
+        return 0.0
+
+    marks = legs[(legs["tag"].astype(str).str.upper() == "MARK") & legs["base_leg_id"].astype(str).isin(open_ids)]
+    if marks.empty:
+        return 0.0
+
+    total = 0.0
+    for _, row in marks.iterrows():
+        leg_id = str(row.get("base_leg_id") or "")
+        qty = net.get(leg_id, pd.to_numeric(row.get("quantity"), errors="coerce"))
+        if qty is None or pd.isna(qty) or qty <= 0:
+            continue
+        strike = pd.to_numeric(row.get("strike"), errors="coerce")
+        underlying = pd.to_numeric(row.get("underlying_price"), errors="coerce")
+        if pd.isna(strike) or pd.isna(underlying):
+            continue
+        instr = str(row.get("instrument_type") or "").upper()
+        if instr in {"PUT", "OPTION_PUT", "PUT_OPTION"}:
+            intrinsic_per = max(0.0, strike - underlying)
+        elif instr in {"", "OPTION", "CALL", "OPTION_CALL", "CALL_OPTION"} or (instr == "SHARES" and row.get("expiry")):
+            intrinsic_per = max(0.0, underlying - strike)
+        else:
+            continue
+        total += float(intrinsic_per) * float(qty) * 100.0
+    return float(round(total, 2))
+
+
+def _short_extrinsic_net_for_position(
+    account: Optional[str],
+    symbol: str,
+    base_position_id: Optional[str] = None,
+    opened_date: Optional[pd.Timestamp] = None,
+    closed_date: Optional[pd.Timestamp] = None,
+    expiry_start: Optional[pd.Timestamp] = None,
+    expiry_end: Optional[pd.Timestamp] = None,
+) -> float:
+    """Net short extrinsic = open extrinsic - close extrinsic (realized)."""
+    rows = excel_loader.get_ledger_rows(account)
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return 0.0
+    if base_position_id:
+        df = df[df.get("base_position_id") == base_position_id]
+    else:
+        df["ticker"] = df["ticker"].astype(str).str.upper()
+        df = df[df["ticker"] == symbol.upper()]
+    if df.empty:
+        return 0.0
+    df["action"] = df.get("action", "").astype(str).str.lower()
+    df["date"] = pd.to_datetime(df.get("date"), errors="coerce")
+    if opened_date is not None:
+        df = df[df["date"] >= opened_date]
+    if closed_date is not None:
+        df = df[df["date"] <= closed_date]
+    if "expiry" in df.columns:
+        df["expiry"] = pd.to_datetime(df.get("expiry"), errors="coerce")
+    if (expiry_start is not None or expiry_end is not None) and "expiry" in df.columns:
+        normalized = df["expiry"].dt.normalize()
+        if expiry_start is not None:
+            df = df[normalized >= expiry_start]
+        if expiry_end is not None:
+            df = df[normalized <= expiry_end]
+    if df.empty:
+        return 0.0
+
+    df["signed_juice_dollars"] = pd.to_numeric(df.get("signed_juice_dollars"), errors="coerce")
+    missing = df["signed_juice_dollars"].isna()
+    if missing.any():
+        df.loc[missing, "signed_juice_dollars"] = df.loc[missing].apply(_signed_juice_from_row, axis=1)
+    df = df.dropna(subset=["signed_juice_dollars"])
+    if df.empty:
+        return 0.0
+    open_extrinsic = float(df[df["action"].str.contains("open", na=False)]["signed_juice_dollars"].sum())
+    close_extrinsic = float(df[df["action"].str.contains("close", na=False)]["signed_juice_dollars"].sum())
+    return float(open_extrinsic - close_extrinsic)
 
 
 def _condition_from_score(score: int) -> str:
@@ -284,79 +560,6 @@ def list_regime_entries(symbol: Optional[str] = None) -> List[RegimeEntry]:
             row["symbol"] = ""
         records.append(RegimeEntry(**row))
     return records
-
-
-def _net_intrinsic_for_position(
-    account: Optional[str],
-    symbol: str,
-    base_position_id: Optional[str] = None,
-    opened_date: Optional[pd.Timestamp] = None,
-    closed_date: Optional[pd.Timestamp] = None,
-    expiry_start: Optional[pd.Timestamp] = None,
-    expiry_end: Optional[pd.Timestamp] = None,
-) -> float:
-    """
-    Net protection from shorts for a symbol: sum over rows of
-    protection_raw = (abs(juice) - abs(premium_total)) with the sign of juice.
-    Scoped by base_position_id if provided and limited to the base open/close window.
-    """
-    rows = excel_loader.get_ledger_rows(account)
-    df = pd.DataFrame(rows)
-    if df.empty:
-        return 0.0
-    if base_position_id:
-        df = df[df.get("base_position_id") == base_position_id]
-    else:
-        df["ticker"] = df["ticker"].astype(str).str.upper()
-        df = df[df["ticker"] == symbol.upper()]
-    if df.empty:
-        return 0.0
-    df["contracts"] = pd.to_numeric(df.get("contracts"), errors="coerce")
-    df["premium_buyback"] = pd.to_numeric(df.get("premium_buyback"), errors="coerce")
-    df["action"] = df.get("action", "").astype(str).str.lower()
-    df["date"] = pd.to_datetime(df.get("date"), errors="coerce")
-    if opened_date is not None:
-        df = df[df["date"] >= opened_date]
-    if closed_date is not None:
-        df = df[df["date"] <= closed_date]
-    if "expiry" in df.columns:
-        df["expiry"] = pd.to_datetime(df.get("expiry"), errors="coerce")
-    if (expiry_start is not None or expiry_end is not None) and "expiry" in df.columns:
-        normalized = df["expiry"].dt.normalize()
-        if expiry_start is not None:
-            df = df[normalized >= expiry_start]
-        if expiry_end is not None:
-            df = df[normalized <= expiry_end]
-    # Always derive juice from row fields (strike/underlying/premium/action/side) since it is no longer stored in XLSX.
-    df["signed_juice_dollars"] = df.apply(_signed_juice_from_row, axis=1)
-
-    def _protection(row):
-        juice = row.get("signed_juice_dollars")
-        prem = row.get("premium_buyback")
-        contracts = row.get("contracts") or 0
-        action = str(row.get("action") or "").lower()
-        if juice is None or prem is None or pd.isna(juice) or pd.isna(prem):
-            return 0.0
-        premium_total = prem * contracts * CONTRACT_MULTIPLIER
-        prot = (premium_total - juice)
-        if "close" in action:
-            prot = -prot
-        logger.info(
-            "Net intrinsic calc: symbol=%s base_position_id=%s date=%s action=%s contracts=%s premium_buyback=%s "
-            "premium_total=%s signed_juice=%s protection=%s",
-            symbol,
-            base_position_id,
-            row.get("date"),
-            action,
-            contracts,
-            prem,
-            premium_total,
-            juice,
-            prot,
-        )
-        return float(prot)
-
-    return float(df.apply(_protection, axis=1).sum())
 
 
 def _income_series_by_week(account: Optional[str], symbol: Optional[str] = None, base_position_id: Optional[str] = None) -> List[PillarSeriesPoint]:
@@ -711,7 +914,17 @@ def position_metrics(
         )
         opened = pd.to_datetime(pos.get("opened_date"), errors="coerce")
         closed = pd.to_datetime(pos.get("closed_date"), errors="coerce")
-        net_intrinsic = _net_intrinsic_for_position(
+        initial_intrinsic, initial_extrinsic = _initial_base_intrinsic_extrinsic_from_legs(
+            legs,
+            expiry_start=expiry_start_ts,
+            expiry_end=expiry_end_ts,
+        )
+        current_base_intrinsic = _current_base_intrinsic_from_legs(
+            legs,
+            expiry_start=expiry_start_ts,
+            expiry_end=expiry_end_ts,
+        )
+        intrinsic_protection = _short_intrinsic_realized_for_position(
             account,
             pos["symbol"],
             base_position_id=pid,
@@ -720,8 +933,25 @@ def position_metrics(
             expiry_start=expiry_start_ts,
             expiry_end=expiry_end_ts,
         )
-        base_plus_protection = (base_value or 0.0) + (net_intrinsic or 0.0)
-        base_health_delta = base_plus_protection - (base_cost or 0.0)
+        realized_flag = not pd.isna(closed)
+        short_extrinsic_net = 0.0
+        if realized_flag:
+            short_extrinsic_net = _short_extrinsic_net_for_position(
+                account,
+                pos["symbol"],
+                base_position_id=pid,
+                opened_date=opened if not pd.isna(opened) else None,
+                closed_date=closed if not pd.isna(closed) else None,
+                expiry_start=expiry_start_ts,
+                expiry_end=expiry_end_ts,
+            )
+        long_extrinsic_loan = float(initial_extrinsic)
+        paydown_source = max(0.0, float(short_extrinsic_net))
+        long_extrinsic_paid = min(long_extrinsic_loan, paydown_source)
+        long_extrinsic_remaining = max(0.0, long_extrinsic_loan - long_extrinsic_paid)
+        long_extrinsic_income = max(0.0, float(short_extrinsic_net) - long_extrinsic_loan)
+        base_plus_protection = (current_base_intrinsic or 0.0) + (intrinsic_protection or 0.0)
+        base_health_delta = base_plus_protection - (initial_intrinsic or 0.0)
 
         # Reserve: use explicit rows if present, otherwise default % of base value
         explicit_reserve = float(reserves_df[reserves_df["position_id"] == pid]["reserved_cash"].sum()) if not reserves_df.empty else 0.0
@@ -729,7 +959,7 @@ def position_metrics(
 
         replacement_ratio = None  # now Base + Protection coverage vs initial cost
         if replacement_cost:
-            replacement_ratio = _safe_ratio(base_value + net_intrinsic, replacement_cost)
+            replacement_ratio = _safe_ratio(base_plus_protection, initial_intrinsic or replacement_cost)
 
         base_growth = None
         if base_cost or net_juice_symbol:
@@ -758,10 +988,18 @@ def position_metrics(
                 base_value=base_value,
                 base_cost=base_cost,
                 initial_base_cost=base_cost,
+                initial_base_intrinsic=_clean_number(initial_intrinsic),
+                initial_base_extrinsic=_clean_number(initial_extrinsic),
+                current_base_intrinsic=_clean_number(current_base_intrinsic),
                 base_plus_protection=base_plus_protection,
                 base_health_delta=base_health_delta,
                 net_juice_to_date=net_juice_symbol,
-                net_intrinsic_to_date=net_intrinsic,
+                net_intrinsic_to_date=intrinsic_protection,
+                short_extrinsic_net=_clean_number(short_extrinsic_net),
+                long_extrinsic_loan=_clean_number(long_extrinsic_loan),
+                long_extrinsic_paid=_clean_number(long_extrinsic_paid),
+                long_extrinsic_remaining=_clean_number(long_extrinsic_remaining),
+                long_extrinsic_income=_clean_number(long_extrinsic_income),
                 replacement_cost=replacement_cost,
                 unit_replacement_cost=unit_replacement_cost,
                 reserve_cash=reserve_cash,
@@ -837,15 +1075,18 @@ def stock_summary_rows(
     expiry_end_ts = _normalize_expiry(expiry_end)
 
     for pm in pos_metrics:
-        original_base_value = pm.initial_base_cost or pm.base_cost
+        initial_intrinsic = pm.initial_base_intrinsic or 0.0
+        initial_extrinsic = pm.initial_base_extrinsic or 0.0
+        original_base_value = (initial_intrinsic + initial_extrinsic) or pm.initial_base_cost or pm.base_cost
         current_base_value = pm.base_value
         protection = pm.net_intrinsic_to_date
-        base_strength_ratio = _safe_ratio((current_base_value or 0) + (protection or 0), original_base_value)
+        denom_intrinsic = initial_intrinsic or original_base_value
+        base_strength_ratio = _safe_ratio((current_base_value or 0) + (protection or 0), denom_intrinsic)
         base_market_value_change = None
         base_growth_pct = None
-        if original_base_value:
+        if denom_intrinsic:
             base_market_value_change = (current_base_value or 0) - original_base_value
-            base_growth_pct = _safe_ratio(base_market_value_change, original_base_value)
+            base_growth_pct = _safe_ratio(base_market_value_change, denom_intrinsic)
         raw_income = _ledger_income(
             account,
             pm.position.symbol,
@@ -854,8 +1095,10 @@ def stock_summary_rows(
             expiry_end=expiry_end_ts,
         )
         income_total_realized = _income_after_base_protection(original_base_value, current_base_value, protection, raw_income)
-        gap, applied, income_after, juice_needed = _protection_allocation(original_base_value, current_base_value, protection, raw_income)
-        income_efficiency = _safe_ratio(income_total_realized, original_base_value)
+        gap, applied, income_after, juice_needed = _protection_allocation(denom_intrinsic, current_base_value, protection, raw_income)
+        current_intrinsic = pm.current_base_intrinsic or 0.0
+        intrinsic_gap = max(0.0, (initial_intrinsic or 0.0) - (current_intrinsic + (protection or 0.0)))
+        income_efficiency = _safe_ratio(income_total_realized, denom_intrinsic)
         week_income, month_income = _stock_income_rates(
             account,
             pm.position.symbol,
@@ -870,19 +1113,27 @@ def stock_summary_rows(
                 ticker=pm.position.symbol,
                 original_base_value=_clean_number(original_base_value),
                 current_base_value=_clean_number(current_base_value),
+                initial_base_intrinsic=_clean_number(pm.initial_base_intrinsic),
+                initial_base_extrinsic=_clean_number(pm.initial_base_extrinsic),
+                current_base_intrinsic=_clean_number(pm.current_base_intrinsic),
                 total_protection_collected=_clean_number(protection),
                 base_strength_ratio=_clean_number(base_strength_ratio),
                 base_market_value_change=_clean_number(base_market_value_change),
                 base_growth_pct=_clean_number(base_growth_pct),
                 income_total_realized=float(income_total_realized),
                 income_after_protection=_clean_number(income_after),
-                protection_gap=_clean_number(gap),
+                protection_gap=_clean_number(intrinsic_gap),
                 protection_juice_applied=_clean_number(applied),
                 juice_needed_for_protection=_clean_number(juice_needed),
                 income_rate_weekly=_clean_number(week_income),
                 income_rate_monthly=_clean_number(month_income),
                 income_efficiency=_clean_number(income_efficiency),
                 income_consistency_pct=_clean_number(consistency_pct),
+                short_extrinsic_net=_clean_number(pm.short_extrinsic_net),
+                long_extrinsic_loan=_clean_number(pm.long_extrinsic_loan),
+                long_extrinsic_paid=_clean_number(pm.long_extrinsic_paid),
+                long_extrinsic_remaining=_clean_number(pm.long_extrinsic_remaining),
+                long_extrinsic_income=_clean_number(pm.long_extrinsic_income),
             )
         )
 
@@ -921,10 +1172,18 @@ def portfolio_summary(
     total_protection_gap = sum((r.protection_gap or 0.0) for r in rows)
     total_juice_needed = sum((r.juice_needed_for_protection or 0.0) for r in rows)
     total_current_base_value = sum((r.current_base_value or 0.0) for r in rows)
+    total_initial_base_intrinsic = sum((r.initial_base_intrinsic or 0.0) for r in rows)
+    total_initial_base_extrinsic = sum((r.initial_base_extrinsic or 0.0) for r in rows)
+    total_current_base_intrinsic = sum((r.current_base_intrinsic or 0.0) for r in rows)
     total_protection_collected = sum((r.total_protection_collected or 0.0) for r in rows)
+    total_short_extrinsic_net = sum((r.short_extrinsic_net or 0.0) for r in rows)
+    total_long_extrinsic_loan = sum((r.long_extrinsic_loan or 0.0) for r in rows)
+    total_long_extrinsic_paid = sum((r.long_extrinsic_paid or 0.0) for r in rows)
+    total_long_extrinsic_remaining = sum((r.long_extrinsic_remaining or 0.0) for r in rows)
+    total_long_extrinsic_income = sum((r.long_extrinsic_income or 0.0) for r in rows)
 
     # Weighted averages for base strength/growth (weight by original base)
-    total_original = sum((r.original_base_value or 0.0) for r in rows)
+    total_original = total_initial_base_intrinsic or sum((r.original_base_value or 0.0) for r in rows)
     base_strength_ratio = None
     base_growth_pct = None
     if total_original:
@@ -936,8 +1195,11 @@ def portfolio_summary(
     return PortfolioSummary(
         total_account_value=_clean_number(total_account_value),
         total_cash=_clean_number(total_cash),
-        total_base_value_initial=_clean_number(total_original),
+        total_base_value_initial=_clean_number((total_initial_base_intrinsic + total_initial_base_extrinsic) or total_original),
         total_current_base_value=_clean_number(total_current_base_value),
+        total_initial_base_intrinsic=_clean_number(total_initial_base_intrinsic),
+        total_initial_base_extrinsic=_clean_number(total_initial_base_extrinsic),
+        total_current_base_intrinsic=_clean_number(total_current_base_intrinsic),
         total_protection_collected=_clean_number(total_protection_collected),
         total_base_plus_protection=_clean_number((total_current_base_value or 0.0) + (total_protection_collected or 0.0)),
         total_income_realized=float(total_income),
@@ -946,6 +1208,11 @@ def portfolio_summary(
         total_juice_needed_for_protection=_clean_number(total_juice_needed),
         total_base_strength_ratio=_clean_number(base_strength_ratio),
         total_base_growth_pct=_clean_number(base_growth_pct),
+        total_short_extrinsic_net=_clean_number(total_short_extrinsic_net),
+        total_long_extrinsic_loan=_clean_number(total_long_extrinsic_loan),
+        total_long_extrinsic_paid=_clean_number(total_long_extrinsic_paid),
+        total_long_extrinsic_remaining=_clean_number(total_long_extrinsic_remaining),
+        total_long_extrinsic_income=_clean_number(total_long_extrinsic_income),
         stocks=rows,
     )
 
@@ -973,15 +1240,26 @@ def stock_detail(
         return StockDetail(ticker=ticker)
 
     pm = rows[0]
+    total_long_extrinsic_loan = sum((r.long_extrinsic_loan or 0.0) for r in rows)
+    total_long_extrinsic_paid = sum((r.long_extrinsic_paid or 0.0) for r in rows)
+    total_long_extrinsic_remaining = sum((r.long_extrinsic_remaining or 0.0) for r in rows)
+    total_long_extrinsic_income = sum((r.long_extrinsic_income or 0.0) for r in rows)
+    total_short_extrinsic_net = sum((r.short_extrinsic_net or 0.0) for r in rows)
+    total_initial_base_intrinsic = sum((r.initial_base_intrinsic or 0.0) for r in rows)
+    total_initial_base_extrinsic = sum((r.initial_base_extrinsic or 0.0) for r in rows)
+    total_current_base_intrinsic = sum((r.current_base_intrinsic or 0.0) for r in rows)
     expiry_start_ts = _normalize_expiry(expiry_start)
     expiry_end_ts = _normalize_expiry(expiry_end)
-    original_base_value = pm.initial_base_cost or pm.base_cost
+    initial_intrinsic = pm.initial_base_intrinsic or 0.0
+    initial_extrinsic = pm.initial_base_extrinsic or 0.0
+    original_base_value = (initial_intrinsic + initial_extrinsic) or pm.initial_base_cost or pm.base_cost
     current_base_value = pm.base_value
     protection = pm.net_intrinsic_to_date
-    base_strength_ratio = _safe_ratio((current_base_value or 0) + (protection or 0), original_base_value)
+    denom_intrinsic = initial_intrinsic or original_base_value
+    base_strength_ratio = _safe_ratio((current_base_value or 0) + (protection or 0), denom_intrinsic)
     base_growth_pct = None
-    if original_base_value:
-        base_growth_pct = _safe_ratio((current_base_value or 0) - original_base_value, original_base_value)
+    if denom_intrinsic:
+        base_growth_pct = _safe_ratio((current_base_value or 0) - denom_intrinsic, denom_intrinsic)
 
     raw_income = _ledger_income(
         account,
@@ -990,13 +1268,15 @@ def stock_detail(
         expiry_start=expiry_start_ts,
         expiry_end=expiry_end_ts,
     )
-    gap, applied, income_after, juice_needed = _protection_allocation(original_base_value, current_base_value, protection, raw_income)
+    gap, applied, income_after, juice_needed = _protection_allocation(denom_intrinsic, current_base_value, protection, raw_income)
+    current_intrinsic = pm.current_base_intrinsic or 0.0
+    intrinsic_gap = max(0.0, (initial_intrinsic or 0.0) - (current_intrinsic + (protection or 0.0)))
     income_total_realized = _income_after_base_protection(original_base_value, current_base_value, protection, raw_income)
-    income_efficiency = _safe_ratio(income_total_realized, original_base_value)
+    income_efficiency = _safe_ratio(income_total_realized, denom_intrinsic)
     income_series = _income_series_by_week(account, symbol=ticker, base_position_id=pm.position.position_id)
     base_strength_series = _base_strength_series_placeholder(_clean_number(base_strength_ratio))
     base_value_series = _base_value_series_placeholder(_clean_number(current_base_value))
-    base_plus_protection = (current_base_value or 0.0) + (protection or 0.0)
+    base_plus_protection = ((pm.current_base_intrinsic or 0.0) + (protection or 0.0))
 
     return StockDetail(
         ticker=ticker,
@@ -1007,10 +1287,18 @@ def stock_detail(
         income_efficiency=_clean_number(income_efficiency),
         base_market_value=_clean_number(current_base_value),
         original_base_value=_clean_number(original_base_value),
+        initial_base_intrinsic=_clean_number(total_initial_base_intrinsic),
+        initial_base_extrinsic=_clean_number(total_initial_base_extrinsic),
+        current_base_intrinsic=_clean_number(total_current_base_intrinsic),
         base_plus_protection=_clean_number(base_plus_protection),
         total_protection_collected=_clean_number(protection),
-        protection_gap=_clean_number(gap),
+        protection_gap=_clean_number(intrinsic_gap),
         net_juice_total=_clean_number(raw_income),
+        short_extrinsic_net=_clean_number(total_short_extrinsic_net),
+        long_extrinsic_loan=_clean_number(total_long_extrinsic_loan),
+        long_extrinsic_paid=_clean_number(total_long_extrinsic_paid),
+        long_extrinsic_remaining=_clean_number(total_long_extrinsic_remaining),
+        long_extrinsic_income=_clean_number(total_long_extrinsic_income),
         income_series_weekly=income_series,
         base_strength_series_weekly=base_strength_series,
         base_value_series_weekly=base_value_series,

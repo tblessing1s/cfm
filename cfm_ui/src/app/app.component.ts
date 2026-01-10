@@ -52,6 +52,7 @@ interface LedgerDraft {
   premium?: number;
   condition?: string;
   base_position_id?: string;
+  base_leg_id?: string;
 }
 
 @Component({
@@ -63,6 +64,7 @@ export class AppComponent implements OnInit {
   accounts: AccountOption[] = [];
   selectedAccount?: string;
   activePage: 'business' | 'data' | 'trades' = 'business';
+  activeBusinessView: 'snapshot' | 'cashflow' = 'snapshot';
   metrics?: DashboardMetrics;
   businessMetrics?: BusinessDashboard;
   portfolioSummary?: PortfolioSummary;
@@ -82,6 +84,7 @@ export class AppComponent implements OnInit {
   showPlanDialog = false;
   showRegimeForm = false;
   selectedTradePositionId?: string;
+  selectedTradeBaseLegId?: string;
   tradeTickerLocked = false;
   tradeStrategyLocked = false;
   tradeSideLocked = false;
@@ -89,26 +92,30 @@ export class AppComponent implements OnInit {
    tradeStrikeLocked = false;
    tradeExpiryLocked = false;
    selectedOpenShortKey?: string;
-   openShortOptions: {
-     key: string;
-     base_position_id?: string | null;
-     ticker?: string | null;
-     side?: string | null;
-     strike?: number | null;
-     expiry?: string | null;
-     remaining: number;
-     label: string;
-   }[] = [];
-   availableOpenShorts: {
-     key: string;
-     base_position_id?: string | null;
-     ticker?: string | null;
-     side?: string | null;
-     strike?: number | null;
-     expiry?: string | null;
-     remaining: number;
-     label: string;
-   }[] = [];
+  openShortOptions: {
+    key: string;
+    base_position_id?: string | null;
+    base_leg_id?: string | null;
+    ticker?: string | null;
+    strategy?: string | null;
+    side?: string | null;
+    strike?: number | null;
+    expiry?: string | null;
+    remaining: number;
+    label: string;
+  }[] = [];
+  availableOpenShorts: {
+    key: string;
+    base_position_id?: string | null;
+    base_leg_id?: string | null;
+    ticker?: string | null;
+    strategy?: string | null;
+    side?: string | null;
+    strike?: number | null;
+    expiry?: string | null;
+    remaining: number;
+    label: string;
+  }[] = [];
   currentMarketCondition: 'RED' | 'YELLOW' | 'GREEN' = 'RED';
   currentStockCondition: 'RED' | 'YELLOW' | 'GREEN' = 'RED';
   marketConditionDraft: 'RED' | 'YELLOW' | 'GREEN' = 'RED';
@@ -183,8 +190,13 @@ export class AppComponent implements OnInit {
   baseLegLookup: Record<string, { open?: BaseLeg; mark?: BaseLeg }> = {};
   selectedBaseLegId: string = '';
   baseLegDateTime?: string;
+  tradeBaseLegOptions: BaseLeg[] = [];
+  tradeBaseLegLookup: Record<string, { open?: BaseLeg; mark?: BaseLeg }> = {};
+  legInstrumentOptions = ['CALL', 'PUT', 'SHARES'];
   legSideOptions = ['BUY', 'SELL'];
   legTagOptions = ['OPEN', 'CLOSE'];
+  baseLegIntrinsicPreview?: number;
+  baseLegExtrinsicPreview?: number;
   conditionOptions = ['GREEN', 'YELLOW', 'RED'];
   tradeConditionOptions = ['GREEN', 'YELLOW', 'RED'];
   reserveDraft: ReserveRow = this.buildBlankReserve();
@@ -218,11 +230,15 @@ export class AppComponent implements OnInit {
     base_opened: 'When you started this base engine.',
     base_closed: 'When this base was closed/retired; closed bases are hidden from selection.',
     leg_position: 'Base position this leg belongs to.',
+    leg_instrument: 'CALL/PUT for option bases; SHARES for stock bases.',
     leg_side: 'BUY or SELL for the base leg.',
     leg_tag: 'OPEN / ROLL_OUT / ROLL_IN / CLOSE / ADD / REDUCE.',
     leg_price: 'Price paid/received per unit (share or contract) for the base leg.',
     leg_fees: 'Commissions/fees associated with this base leg.',
     leg_amount: 'Signed cash flow for the leg (BUY negative, SELL positive).',
+    leg_underlying: 'Underlying price used to split intrinsic vs extrinsic.',
+    leg_intrinsic: 'Computed intrinsic portion of the premium (not stored).',
+    leg_extrinsic: 'Computed extrinsic portion of the premium (not stored).',
     leg_condition: 'Condition when logging this leg: GREEN (growth OK), YELLOW/RED (stay in cash).',
     reserve_position: 'Base position this reserve is tied to.',
     reserve_cash: 'Cash earmarked for this base to cover rolls/assignments.',
@@ -277,7 +293,12 @@ export class AppComponent implements OnInit {
     if (page === 'trades' && this.selectedAccount) {
       this.loadMetrics();
       this.loadLedger(this.selectedAccount);
+      this.loadTradeBaseLegOptions();
     }
+  }
+
+  setBusinessView(view: 'snapshot' | 'cashflow'): void {
+    this.activeBusinessView = view;
   }
 
   loadMetrics(): void {
@@ -383,6 +404,9 @@ export class AppComponent implements OnInit {
         this.ledgerOpenBalances = this.computeOpenBalances(this.ledgerRows);
         this.ledgerSummaries = buildLedgerSummaries(this.ledgerRows, this.contractMultiplier);
         this.refreshOpenShortOptions();
+        if (this.activePage === 'trades') {
+          this.loadTradeBaseLegOptions();
+        }
         this.updateLedgerFilterOptions(this.ledgerSummaries);
         this.updatePortfolioExpiryOptions(this.ledgerRows);
         this.ledgerPage = 1;
@@ -494,6 +518,8 @@ export class AppComponent implements OnInit {
       this.tradeDraft.ticker = '';
       this.tradeDraft.strategy = '';
       this.tradeDraft.base_position_id = undefined;
+      this.tradeDraft.base_leg_id = undefined;
+      this.selectedTradeBaseLegId = undefined;
       return;
     }
     const pm = this.positionMetrics.find((p) => p.position.position_id === positionId);
@@ -502,6 +528,8 @@ export class AppComponent implements OnInit {
       this.tradeDraft.strategy = pm.position.strategy || this.tradeDraft.strategy;
       this.tradeDraft.side = 'Call';
       this.tradeDraft.base_position_id = pm.position.position_id;
+      this.tradeDraft.base_leg_id = undefined;
+      this.selectedTradeBaseLegId = undefined;
       this.tradeTickerLocked = true;
       this.tradeStrategyLocked = true;
       this.tradeSideLocked = pm.position.strategy === 'CFM';
@@ -750,7 +778,8 @@ export class AppComponent implements OnInit {
       expiry: this.tradeDraft.expiry!,
       premium: premium ?? 0,
       condition: this.tradeDraft.condition,
-      base_position_id: this.selectedTradePositionId,
+      base_position_id: this.tradeDraft.base_position_id,
+      base_leg_id: this.tradeDraft.base_leg_id,
     };
 
     this.pendingTrades = [...this.pendingTrades, staged];
@@ -969,6 +998,82 @@ export class AppComponent implements OnInit {
     const gross = Math.abs(price * qty * 100);
     const total = gross + Math.abs(fees);
     this.baseLegDraft.amount = Math.round(total * 100) / 100;
+    this.recomputeBaseLegPremiumBreakdown();
+  }
+
+  onTradeBaseLegSelect(legId?: string): void {
+    this.selectedTradeBaseLegId = legId || undefined;
+    if (!legId) {
+      this.tradeTickerLocked = false;
+      this.tradeStrategyLocked = false;
+      this.tradeSideLocked = false;
+      this.tradeActionLocked = false;
+      this.tradeStrikeLocked = false;
+      this.tradeExpiryLocked = false;
+      this.selectedOpenShortKey = undefined;
+      this.availableOpenShorts = [];
+      this.tradeDraft.side = 'Call';
+      this.tradeDraft.ticker = '';
+      this.tradeDraft.strategy = '';
+      this.tradeDraft.base_leg_id = undefined;
+      this.tradeDraft.base_position_id = undefined;
+      return;
+    }
+    const entry = this.tradeBaseLegLookup[legId];
+    const leg = entry?.mark || entry?.open;
+    if (!leg) {
+      return;
+    }
+    this.tradeDraft.base_leg_id = leg.base_leg_id;
+    this.tradeDraft.base_position_id = leg.position_id;
+    this.selectedTradePositionId = leg.position_id;
+    const pm = this.positionMetrics.find((p) => p.position.position_id === leg.position_id);
+    if (pm) {
+      this.tradeDraft.ticker = pm.position.symbol;
+      this.tradeDraft.strategy = pm.position.strategy || this.tradeDraft.strategy;
+      this.tradeDraft.side = 'Call';
+      this.tradeTickerLocked = true;
+      this.tradeStrategyLocked = true;
+      this.tradeSideLocked = pm.position.strategy === 'CFM';
+    }
+    this.tradeActionLocked = false;
+    this.tradeStrikeLocked = false;
+    this.tradeExpiryLocked = false;
+    this.selectedOpenShortKey = undefined;
+    this.updateAvailableOpenShorts();
+  }
+
+  tradeBaseLegLabel(leg: BaseLeg): string {
+    const pm = this.positionMetrics.find((p) => p.position.position_id === leg.position_id);
+    const symbol = pm?.position.symbol || leg.position_id;
+    const date = leg.date ? new Date(leg.date).toISOString().slice(0, 10) : '';
+    return `${symbol} · ${leg.base_leg_id}${date ? ' · ' + date : ''}`;
+  }
+
+  recomputeBaseLegPremiumBreakdown(): void {
+    const instr = (this.baseLegDraft.instrument_type || '').toUpperCase();
+    const optionTokens = new Set(['', 'OPTION', 'CALL', 'PUT', 'OPTION_CALL', 'OPTION_PUT', 'CALL_OPTION', 'PUT_OPTION']);
+    if (!optionTokens.has(instr)) {
+      this.baseLegIntrinsicPreview = undefined;
+      this.baseLegExtrinsicPreview = undefined;
+      return;
+    }
+    const qty = this.toNumber(this.baseLegDraft.quantity);
+    const price = this.toNumber(this.baseLegDraft.price);
+    const strike = this.toNumber(this.baseLegDraft.strike);
+    const underlying = this.toNumber(this.baseLegDraft.underlying_price);
+    if (qty === undefined || price === undefined || strike === undefined || underlying === undefined) {
+      this.baseLegIntrinsicPreview = undefined;
+      this.baseLegExtrinsicPreview = undefined;
+      return;
+    }
+    const isPut = instr === 'PUT' || instr === 'OPTION_PUT' || instr === 'PUT_OPTION';
+    const intrinsicPer = Math.max(0, isPut ? strike - underlying : underlying - strike);
+    const multiplier = 100;
+    const intrinsicTotal = intrinsicPer * qty * multiplier;
+    const premiumTotal = price * qty * multiplier;
+    this.baseLegIntrinsicPreview = Math.round(intrinsicTotal * 100) / 100;
+    this.baseLegExtrinsicPreview = Math.round((premiumTotal - intrinsicTotal) * 100) / 100;
   }
 
   applyReserveDefault(positionId: string): void {
@@ -1019,6 +1124,26 @@ export class AppComponent implements OnInit {
     if (v >= target) return 'badge-green';
     if (v >= target * 0.75) return 'badge-yellow';
     return 'badge-red';
+  }
+
+  baseStrengthStatus(extrinsicRemaining?: number | null, protectionGap?: number | null): string {
+    const extrinsic = extrinsicRemaining ?? 0;
+    const gap = protectionGap ?? 0;
+    const eps = 1e-6;
+    if (extrinsic <= eps && gap <= eps) return 'Fully protected';
+    if (extrinsic > eps && gap > eps) return 'Needs paydown + protection';
+    if (extrinsic > eps) return 'Needs extrinsic paydown';
+    return 'Needs intrinsic protection';
+  }
+
+  baseStrengthGuidance(extrinsicRemaining?: number | null, protectionGap?: number | null): string {
+    const extrinsic = extrinsicRemaining ?? 0;
+    const gap = protectionGap ?? 0;
+    const eps = 1e-6;
+    if (extrinsic <= eps && gap <= eps) return 'No remaining extrinsic or protection gap.';
+    if (extrinsic > eps && gap > eps) return 'Reduce extrinsic and add short intrinsic.';
+    if (extrinsic > eps) return 'Reduce extrinsic with short income.';
+    return 'Add short intrinsic protection.';
   }
 
   navSeriesForChart(): any[] {
@@ -1141,13 +1266,20 @@ export class AppComponent implements OnInit {
       premium: row.premium_buyback ?? undefined,
       condition: row.condition || row.notes || undefined,
       base_position_id: row.base_position_id,
+      base_leg_id: row.base_leg_id,
     };
-    if (row.base_position_id) {
-      this.selectedTradePositionId = row.base_position_id;
+    if (row.base_leg_id) {
+      this.selectedTradeBaseLegId = row.base_leg_id;
+      const leg = this.tradeBaseLegLookup[row.base_leg_id]?.open || this.tradeBaseLegLookup[row.base_leg_id]?.mark;
+      if (leg) {
+        this.tradeDraft.base_position_id = leg.position_id;
+        this.selectedTradePositionId = leg.position_id;
+      }
       this.tradeTickerLocked = true;
       this.tradeStrategyLocked = true;
       this.tradeSideLocked = this.tradeDraft.strategy === 'CFM';
     } else {
+      this.selectedTradeBaseLegId = undefined;
       this.selectedTradePositionId = undefined;
       this.tradeTickerLocked = false;
       this.tradeStrategyLocked = false;
@@ -1213,7 +1345,8 @@ export class AppComponent implements OnInit {
       strike: strike ?? 0,
       expiry: this.tradeDraft.expiry!,
       premium: premium ?? 0,
-      base_position_id: this.selectedTradePositionId,
+      base_position_id: this.tradeDraft.base_position_id,
+      base_leg_id: this.tradeDraft.base_leg_id,
     };
 
     this.submitLoading = true;
@@ -1261,6 +1394,7 @@ export class AppComponent implements OnInit {
     this.entryError = undefined;
     this.entrySuccess = undefined;
     this.selectedTradePositionId = undefined;
+    this.selectedTradeBaseLegId = undefined;
     this.tradeTickerLocked = false;
     this.tradeStrategyLocked = false;
     this.tradeSideLocked = false;
@@ -1637,6 +1771,7 @@ export class AppComponent implements OnInit {
       premium: undefined,
       condition: undefined,
       base_position_id: undefined,
+      base_leg_id: undefined,
     };
     this.enforceSideForStrategy(draft);
     return draft;
@@ -1672,6 +1807,8 @@ export class AppComponent implements OnInit {
   private buildBlankBaseLeg(): BaseLeg {
     const today = new Date().toISOString().slice(0, 10);
     this.baseLegDateTime = `${today}T09:30`;
+    this.baseLegIntrinsicPreview = undefined;
+    this.baseLegExtrinsicPreview = undefined;
     return {
       base_leg_id: this.newId(),
       position_id: '',
@@ -1683,6 +1820,7 @@ export class AppComponent implements OnInit {
       strike: undefined,
       expiry: undefined,
       price: 0,
+      underlying_price: undefined,
       fees: 0,
       amount: 0,
       tag: 'OPEN',
@@ -1734,6 +1872,8 @@ export class AppComponent implements OnInit {
     this.selectedBaseLegId = legId;
     if (!legId) {
       this.baseLegDraft = this.buildBlankBaseLeg();
+      this.baseLegIntrinsicPreview = undefined;
+      this.baseLegExtrinsicPreview = undefined;
       this.baseLegDraft.position_id = this.selectedPositionId || '';
       return;
     }
@@ -1753,6 +1893,33 @@ export class AppComponent implements OnInit {
     };
     this.baseLegDateTime = `${today}T09:30`;
     this.recomputeBaseLegAmount();
+  }
+
+  loadTradeBaseLegOptions(): void {
+    this.dashboardService.listBaseLegs().subscribe({
+      next: (legs) => {
+        const grouped = legs.reduce<Record<string, { open?: BaseLeg; mark?: BaseLeg; net: number }>>((acc, leg) => {
+          const id = leg.base_leg_id || '';
+          if (!id) return acc;
+          const tag = (leg.tag || '').toString().toUpperCase();
+          const qty = Number(leg.quantity || 0);
+          if (!acc[id]) acc[id] = { net: 0 };
+          if (tag === 'OPEN') acc[id].open = leg;
+          if (tag === 'MARK') acc[id].mark = leg;
+          if (tag === 'CLOSE') acc[id].net -= qty;
+          if (tag === 'OPEN') acc[id].net += qty;
+          return acc;
+        }, {});
+        this.tradeBaseLegLookup = grouped;
+        this.tradeBaseLegOptions = Object.values(grouped)
+          .filter((g) => g.open && g.mark && g.net > 0)
+          .map((g) => g.open as BaseLeg);
+      },
+      error: () => {
+        this.tradeBaseLegOptions = [];
+        this.tradeBaseLegLookup = {};
+      },
+    });
   }
 
   private buildBlankReserve(): ReserveRow {
@@ -2030,7 +2197,9 @@ export class AppComponent implements OnInit {
     const options: {
       key: string;
       base_position_id?: string | null;
+      base_leg_id?: string | null;
       ticker?: string | null;
+      strategy?: string | null;
       side?: string | null;
       strike?: number | null;
       expiry?: string | null;
@@ -2047,7 +2216,9 @@ export class AppComponent implements OnInit {
         options.push({
           key,
           base_position_id: row.base_position_id,
+          base_leg_id: row.base_leg_id,
           ticker: row.ticker,
+          strategy: row.strategy,
           side: row.side,
           strike: row.strike as any,
           expiry: row.expiry as any,
@@ -2061,10 +2232,10 @@ export class AppComponent implements OnInit {
   }
 
   private updateAvailableOpenShorts(): void {
-    const baseId = this.selectedTradePositionId || this.tradeDraft?.base_position_id;
-    this.availableOpenShorts = baseId
-      ? this.openShortOptions.filter((opt) => opt.base_position_id === baseId)
-      : [];
+    const baseLegId = this.selectedTradeBaseLegId || this.tradeDraft?.base_leg_id;
+    this.availableOpenShorts = baseLegId
+      ? this.openShortOptions.filter((opt) => opt.base_leg_id === baseLegId)
+      : [...this.openShortOptions];
     if (!this.availableOpenShorts.some((opt) => opt.key === this.selectedOpenShortKey)) {
       this.selectedOpenShortKey = undefined;
       this.tradeActionLocked = false;
@@ -2085,6 +2256,21 @@ export class AppComponent implements OnInit {
     if (!opt) {
       return;
     }
+    if (opt.ticker) {
+      this.tradeDraft.ticker = opt.ticker;
+    }
+    if (opt.strategy) {
+      this.tradeDraft.strategy = opt.strategy;
+    }
+    if (opt.side) {
+      this.tradeDraft.side = opt.side as any;
+    }
+    if (opt.base_position_id) {
+      this.tradeDraft.base_position_id = opt.base_position_id;
+    }
+    if (opt.base_leg_id) {
+      this.tradeDraft.base_leg_id = opt.base_leg_id;
+    }
     this.tradeDraft.action = 'Close';
     this.tradeActionLocked = true;
     this.tradeDraft.strike = opt.strike ?? this.tradeDraft.strike;
@@ -2092,7 +2278,9 @@ export class AppComponent implements OnInit {
     this.tradeDraft.expiry = opt.expiry ?? this.tradeDraft.expiry;
     this.tradeExpiryLocked = !!opt.expiry;
     this.tradeDraft.contracts = opt.remaining ?? this.tradeDraft.contracts;
-    // Keep ticker/strategy/side from base position locks already applied.
+    this.tradeTickerLocked = !!this.tradeDraft.ticker;
+    this.tradeStrategyLocked = !!this.tradeDraft.strategy;
+    this.tradeSideLocked = !!this.tradeDraft.side;
   }
 
 }

@@ -85,6 +85,7 @@ export interface BaseLeg {
   strike?: number;
   expiry?: string;
   price: number;
+  underlying_price?: number;
   fees?: number;
   amount: number;
   tag?: string;
@@ -111,10 +112,18 @@ export interface PositionMetrics {
   base_value?: number;
   base_cost?: number;
   initial_base_cost?: number;
+  initial_base_intrinsic?: number;
+  initial_base_extrinsic?: number;
+  current_base_intrinsic?: number;
   base_plus_protection?: number;
   base_health_delta?: number;
   net_juice_to_date: number;
   net_intrinsic_to_date?: number;
+  short_extrinsic_net?: number;
+  long_extrinsic_loan?: number;
+  long_extrinsic_paid?: number;
+  long_extrinsic_remaining?: number;
+  long_extrinsic_income?: number;
   replacement_cost?: number;
   unit_replacement_cost?: number;
   reserve_cash: number;
@@ -162,19 +171,27 @@ export interface StockSummaryRow {
   ticker: string;
   original_base_value?: number;
   current_base_value?: number;
+  initial_base_intrinsic?: number;
+  initial_base_extrinsic?: number;
+  current_base_intrinsic?: number;
   total_protection_collected?: number;
   base_strength_ratio?: number;
   base_market_value_change?: number;
   base_growth_pct?: number;
   income_total_realized: number;
-   income_after_protection?: number;
-   protection_gap?: number;
-   protection_juice_applied?: number;
-   juice_needed_for_protection?: number;
+  income_after_protection?: number;
+  protection_gap?: number;
+  protection_juice_applied?: number;
+  juice_needed_for_protection?: number;
   income_rate_weekly?: number;
   income_rate_monthly?: number;
   income_efficiency?: number;
   income_consistency_pct?: number;
+  short_extrinsic_net?: number;
+  long_extrinsic_loan?: number;
+  long_extrinsic_paid?: number;
+  long_extrinsic_remaining?: number;
+  long_extrinsic_income?: number;
   contribution_income_pct?: number;
   contribution_protection_pct?: number;
   contribution_growth_pct?: number;
@@ -185,6 +202,9 @@ export interface PortfolioSummary {
   total_cash?: number;
   total_base_value_initial?: number;
   total_current_base_value?: number;
+  total_initial_base_intrinsic?: number;
+  total_initial_base_extrinsic?: number;
+  total_current_base_intrinsic?: number;
   total_protection_collected?: number;
   total_base_plus_protection?: number;
   total_income_realized: number;
@@ -193,6 +213,11 @@ export interface PortfolioSummary {
   total_juice_needed_for_protection?: number;
   total_base_strength_ratio?: number;
   total_base_growth_pct?: number;
+  total_short_extrinsic_net?: number;
+  total_long_extrinsic_loan?: number;
+  total_long_extrinsic_paid?: number;
+  total_long_extrinsic_remaining?: number;
+  total_long_extrinsic_income?: number;
   stocks: StockSummaryRow[];
 }
 
@@ -205,10 +230,18 @@ export interface StockDetail {
   income_efficiency?: number;
   base_market_value?: number;
   original_base_value?: number;
+  initial_base_intrinsic?: number;
+  initial_base_extrinsic?: number;
+  current_base_intrinsic?: number;
   base_plus_protection?: number;
   total_protection_collected?: number;
   protection_gap?: number;
   net_juice_total?: number;
+  short_extrinsic_net?: number;
+  long_extrinsic_loan?: number;
+  long_extrinsic_paid?: number;
+  long_extrinsic_remaining?: number;
+  long_extrinsic_income?: number;
   income_series_weekly: PillarSeriesPoint[];
   base_strength_series_weekly: PillarSeriesPoint[];
   base_value_series_weekly: PillarSeriesPoint[];
@@ -259,6 +292,7 @@ export interface LedgerRow {
   row_number?: number;
   strategy?: string;
   base_position_id?: string;
+  base_leg_id?: string;
 }
 
 export interface LedgerEntryCreate {
@@ -275,6 +309,7 @@ export interface LedgerEntryCreate {
   underlying?: number;
   condition?: string;
   base_position_id?: string;
+  base_leg_id?: string;
 }
 
 export interface LedgerUpdatePayload {
@@ -290,6 +325,7 @@ export interface LedgerUpdatePayload {
   trade_datetime: string;
   premium: number;
   base_position_id?: string;
+  base_leg_id?: string;
 }
 
 @Injectable({

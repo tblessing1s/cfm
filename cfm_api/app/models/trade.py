@@ -100,6 +100,7 @@ class LedgerRow(BaseModel):
     condition: Optional[str] = None
     row_number: Optional[int] = None
     base_position_id: Optional[str] = None
+    base_leg_id: Optional[str] = None
 
 
 class LedgerEntryCreate(BaseModel):
@@ -116,6 +117,7 @@ class LedgerEntryCreate(BaseModel):
     underlying: Optional[float] = None
     condition: Optional[str] = None
     base_position_id: Optional[str] = None
+    base_leg_id: Optional[str] = None
 
 
 class LedgerUpdate(BaseModel):
@@ -131,3 +133,4 @@ class LedgerUpdate(BaseModel):
     trade_datetime: datetime
     premium: float
     base_position_id: Optional[str] = None
+    base_leg_id: Optional[str] = None

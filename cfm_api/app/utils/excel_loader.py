@@ -57,16 +57,8 @@ def _discover_accounts() -> List[_AccountInfo]:
             if path.stem.lower() in {"juice_ledger"}:
                 continue
             stem = path.stem.lower()
-            # Prefer DATA_DIR; if legacy exists, move it
+            # Prefer DATA_DIR; avoid moving files during requests to prevent hangs.
             target = DATA_DIR / path.name
-            if path.parent == JOURNAL_ROOT and not target.exists():
-                try:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(path), target)
-                    collected[stem] = target
-                    continue
-                except Exception:
-                    pass
             if stem not in collected:
                 collected[stem] = target if target.exists() else path
 
@@ -377,6 +369,8 @@ def append_ledger_entries(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]
             ws.cell(row=r, column=cols["Underlying"], value=underlying)
         if "Base Position Id" in cols:
             ws.cell(row=r, column=cols["Base Position Id"], value=entry.get("base_position_id"))
+        if "Base Leg Id" in cols:
+            ws.cell(row=r, column=cols["Base Leg Id"], value=entry.get("base_leg_id"))
         if "Key" in cols:
             ws.cell(row=r, column=cols["Key"], value=key)
         if "Side" in cols:
@@ -402,6 +396,7 @@ def append_ledger_entries(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]
                 "key": key,
                 "notes": None,
                 "base_position_id": entry.get("base_position_id"),
+                "base_leg_id": entry.get("base_leg_id"),
                 "row_number": r,
             }
         )
@@ -429,12 +424,13 @@ def _get_ledger_columns(ws) -> Dict[str, int]:
         "key": "Key",
         "side": "Side",
         "base position id": "Base Position Id",
+        "base leg id": "Base Leg Id",
     }
     return {target: headers[key] for key, target in aliases.items() if key in headers}
 
 
 def _ensure_ledger_headers(ws) -> None:
-    """Ensure legacy ledgers drop Condition and include Base Position Id."""
+    """Ensure legacy ledgers drop Condition and include Base Position/Leg Id."""
     headers = [cell.value for cell in ws[1]]
     changed = False
     if "Condition" in headers:
@@ -444,6 +440,10 @@ def _ensure_ledger_headers(ws) -> None:
         changed = True
     if "Base Position Id" not in headers:
         ws.cell(row=1, column=len(headers) + 1, value="Base Position Id")
+        headers.append("Base Position Id")
+        changed = True
+    if "Base Leg Id" not in headers:
+        ws.cell(row=1, column=len(headers) + 1, value="Base Leg Id")
         changed = True
     # Caller is responsible for saving the workbook; avoid using ws.parent.filename.
 
@@ -682,6 +682,8 @@ def update_ledger_row(account: str, row_number: int, data: Dict[str, Any]) -> Di
         ws.cell(row=r, column=cols["Underlying"], value=underlying)
     if "Base Position Id" in cols:
         ws.cell(row=r, column=cols["Base Position Id"], value=data.get("base_position_id"))
+    if "Base Leg Id" in cols:
+        ws.cell(row=r, column=cols["Base Leg Id"], value=data.get("base_leg_id"))
     if "Side" in cols:
         ws.cell(row=r, column=cols["Side"], value=data.get("side") or "Call")
     if "Key" in cols:
@@ -714,6 +716,7 @@ def update_ledger_row(account: str, row_number: int, data: Dict[str, Any]) -> Di
         "notes": None,
         "row_number": r,
         "base_position_id": data.get("base_position_id"),
+        "base_leg_id": data.get("base_leg_id"),
     }
     return updated
 
@@ -792,6 +795,7 @@ def get_ledger_rows(account: str | None = None) -> List[Dict[str, Any]]:
         "premium_buyback",
         "underlying",
         "base_position_id",
+        "base_leg_id",
         "notes",
         "condition",
         "key",

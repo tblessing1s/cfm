@@ -128,6 +128,7 @@ legs_store = CsvStore(
         "amount",
         "tag",
         "condition",
+        "underlying_price",
     ],
 )
 
@@ -353,7 +354,11 @@ def add_base_leg(payload: Dict[str, Any]) -> Dict[str, Any]:
     fees = payload.get("fees", 0)
     amount = payload.get("amount")
     instr = str(payload.get("instrument_type") or "").upper()
-    mult = 100.0 if (instr == "" or instr == "OPTION") else 1.0
+    underlying = payload.get("underlying_price")
+    option_tokens = {"", "OPTION", "CALL", "PUT", "OPTION_CALL", "OPTION_PUT", "CALL_OPTION", "PUT_OPTION"}
+    is_option = instr in option_tokens
+    is_put = instr in {"PUT", "OPTION_PUT", "PUT_OPTION"}
+    mult = 100.0 if is_option else 1.0
     tag_val = str(payload.get("tag") or "").upper()
     if tag_val == "MARK":
         mult = 100.0
@@ -385,6 +390,10 @@ def add_base_leg(payload: Dict[str, Any]) -> Dict[str, Any]:
         price = abs(float(price)) if price is not None else None
     except Exception:
         pass
+    try:
+        underlying = abs(float(underlying)) if underlying is not None else None
+    except Exception:
+        underlying = None
     try:
         fees = abs(float(fees)) if fees is not None else 0
     except Exception:
@@ -454,6 +463,7 @@ def add_base_leg(payload: Dict[str, Any]) -> Dict[str, Any]:
         "amount": amount,
         "tag": payload.get("tag"),
         "condition": payload.get("condition"),
+        "underlying_price": underlying,
     }
 
     # Manage MARK/CLOSE upsert so only one MARK exists per base_leg_id; for OPEN ensure a paired MARK row exists.
