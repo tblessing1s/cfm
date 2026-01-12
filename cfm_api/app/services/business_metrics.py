@@ -170,6 +170,7 @@ def _ledger_income(
     account: Optional[str] = None,
     ticker: Optional[str] = None,
     base_position_id: Optional[str] = None,
+    base_leg_ids: Optional[List[str]] = None,
     expiry_start: Optional[pd.Timestamp] = None,
     expiry_end: Optional[pd.Timestamp] = None,
 ) -> float:
@@ -199,6 +200,16 @@ def _ledger_income(
         df = df[df["ticker"] == ticker.upper()]
     if base_position_id:
         df = df[df.get("base_position_id") == base_position_id]
+    if base_leg_ids is not None:
+        if not base_leg_ids:
+            return 0.0
+        if "base_leg_id" not in df.columns:
+            return 0.0
+        ids = {str(val) for val in base_leg_ids if val}
+        if not ids:
+            return 0.0
+        df["base_leg_id"] = df.get("base_leg_id").astype(str)
+        df = df[df["base_leg_id"].isin(ids)]
     df = df.dropna(subset=["signed_juice_dollars"])
     if df.empty:
         return 0.0
@@ -225,6 +236,7 @@ def _short_intrinsic_realized_for_position(
     account: Optional[str],
     symbol: str,
     base_position_id: Optional[str] = None,
+    base_leg_ids: Optional[List[str]] = None,
     opened_date: Optional[pd.Timestamp] = None,
     closed_date: Optional[pd.Timestamp] = None,
     expiry_start: Optional[pd.Timestamp] = None,
@@ -235,7 +247,18 @@ def _short_intrinsic_realized_for_position(
     df = pd.DataFrame(rows)
     if df.empty:
         return 0.0
-    if base_position_id:
+    if base_leg_ids is not None:
+        if not base_leg_ids:
+            return 0.0
+        if "base_leg_id" in df.columns:
+            ids = {str(val) for val in base_leg_ids if val}
+            if not ids:
+                return 0.0
+            df["base_leg_id"] = df.get("base_leg_id").astype(str)
+            df = df[df["base_leg_id"].isin(ids)]
+        else:
+            return 0.0
+    elif base_position_id:
         df = df[df.get("base_position_id") == base_position_id]
     else:
         df["ticker"] = df["ticker"].astype(str).str.upper()
@@ -460,10 +483,34 @@ def _current_base_intrinsic_from_legs(
     return float(round(total, 2))
 
 
+def _open_base_leg_ids(legs: pd.DataFrame) -> List[str]:
+    """Return base_leg_ids for legs that remain open and have a MARK."""
+    if legs.empty or not {"base_leg_id", "side", "quantity", "tag"}.issubset(legs.columns):
+        return []
+    net: Dict[str, float] = {}
+    has_mark: Dict[str, bool] = {}
+    for _, row in legs.iterrows():
+        leg_id = str(row.get("base_leg_id") or "").strip()
+        if not leg_id:
+            continue
+        tag = str(row.get("tag") or "").upper()
+        if tag == "MARK":
+            has_mark[leg_id] = True
+            continue
+        qty = pd.to_numeric(row.get("quantity"), errors="coerce")
+        if pd.isna(qty):
+            continue
+        side = str(row.get("side") or "").upper()
+        delta = qty if side == "BUY" else -qty
+        net[leg_id] = net.get(leg_id, 0.0) + float(delta)
+    return [lid for lid, qty in net.items() if qty > 0 and has_mark.get(lid)]
+
+
 def _short_extrinsic_net_for_position(
     account: Optional[str],
     symbol: str,
     base_position_id: Optional[str] = None,
+    base_leg_ids: Optional[List[str]] = None,
     opened_date: Optional[pd.Timestamp] = None,
     closed_date: Optional[pd.Timestamp] = None,
     expiry_start: Optional[pd.Timestamp] = None,
@@ -474,7 +521,18 @@ def _short_extrinsic_net_for_position(
     df = pd.DataFrame(rows)
     if df.empty:
         return 0.0
-    if base_position_id:
+    if base_leg_ids is not None:
+        if not base_leg_ids:
+            return 0.0
+        if "base_leg_id" in df.columns:
+            ids = {str(val) for val in base_leg_ids if val}
+            if not ids:
+                return 0.0
+            df["base_leg_id"] = df.get("base_leg_id").astype(str)
+            df = df[df["base_leg_id"].isin(ids)]
+        else:
+            return 0.0
+    elif base_position_id:
         df = df[df.get("base_position_id") == base_position_id]
     else:
         df["ticker"] = df["ticker"].astype(str).str.upper()
@@ -897,6 +955,14 @@ def position_metrics(
             continue
         pid = pos["position_id"]
         legs = business_loader.list_base_legs(pid)
+        open_leg_ids = _open_base_leg_ids(legs)
+        open_legs = legs
+        has_leg_ids = "base_leg_id" in legs.columns and legs["base_leg_id"].astype(str).str.strip().ne("").any()
+        if has_leg_ids:
+            if open_leg_ids:
+                open_legs = legs[legs["base_leg_id"].astype(str).isin(open_leg_ids)]
+            else:
+                open_legs = legs.iloc[0:0]
         base_value, base_cost, current_units = _position_value_cost_units(legs)
 
         # Replacement cost benchmark: initial entry cost
@@ -915,36 +981,36 @@ def position_metrics(
         opened = pd.to_datetime(pos.get("opened_date"), errors="coerce")
         closed = pd.to_datetime(pos.get("closed_date"), errors="coerce")
         initial_intrinsic, initial_extrinsic = _initial_base_intrinsic_extrinsic_from_legs(
-            legs,
+            open_legs,
             expiry_start=expiry_start_ts,
             expiry_end=expiry_end_ts,
         )
         current_base_intrinsic = _current_base_intrinsic_from_legs(
-            legs,
+            open_legs,
             expiry_start=expiry_start_ts,
             expiry_end=expiry_end_ts,
         )
+        base_leg_scope = open_leg_ids
         intrinsic_protection = _short_intrinsic_realized_for_position(
             account,
             pos["symbol"],
             base_position_id=pid,
+            base_leg_ids=base_leg_scope,
             opened_date=opened if not pd.isna(opened) else None,
             closed_date=closed if not pd.isna(closed) else None,
             expiry_start=expiry_start_ts,
             expiry_end=expiry_end_ts,
         )
-        realized_flag = not pd.isna(closed)
-        short_extrinsic_net = 0.0
-        if realized_flag:
-            short_extrinsic_net = _short_extrinsic_net_for_position(
-                account,
-                pos["symbol"],
-                base_position_id=pid,
-                opened_date=opened if not pd.isna(opened) else None,
-                closed_date=closed if not pd.isna(closed) else None,
-                expiry_start=expiry_start_ts,
-                expiry_end=expiry_end_ts,
-            )
+        short_extrinsic_net = _short_extrinsic_net_for_position(
+            account,
+            pos["symbol"],
+            base_position_id=pid,
+            base_leg_ids=base_leg_scope,
+            opened_date=opened if not pd.isna(opened) else None,
+            closed_date=closed if not pd.isna(closed) else None,
+            expiry_start=expiry_start_ts,
+            expiry_end=expiry_end_ts,
+        )
         long_extrinsic_loan = float(initial_extrinsic)
         paydown_source = max(0.0, float(short_extrinsic_net))
         long_extrinsic_paid = min(long_extrinsic_loan, paydown_source)
@@ -1240,6 +1306,10 @@ def stock_detail(
         return StockDetail(ticker=ticker)
 
     pm = rows[0]
+    open_leg_ids: List[str] = []
+    legs = business_loader.list_base_legs(pm.position.position_id)
+    if not legs.empty:
+        open_leg_ids = _open_base_leg_ids(legs)
     total_long_extrinsic_loan = sum((r.long_extrinsic_loan or 0.0) for r in rows)
     total_long_extrinsic_paid = sum((r.long_extrinsic_paid or 0.0) for r in rows)
     total_long_extrinsic_remaining = sum((r.long_extrinsic_remaining or 0.0) for r in rows)
@@ -1261,10 +1331,15 @@ def stock_detail(
     if denom_intrinsic:
         base_growth_pct = _safe_ratio((current_base_value or 0) - denom_intrinsic, denom_intrinsic)
 
-    raw_income = _ledger_income(
+    opened = pd.to_datetime(pm.position.opened_date, errors="coerce")
+    closed = pd.to_datetime(pm.position.closed_date, errors="coerce")
+    raw_income = _short_extrinsic_net_for_position(
         account,
         ticker,
         base_position_id=pm.position.position_id,
+        base_leg_ids=open_leg_ids,
+        opened_date=opened if not pd.isna(opened) else None,
+        closed_date=closed if not pd.isna(closed) else None,
         expiry_start=expiry_start_ts,
         expiry_end=expiry_end_ts,
     )

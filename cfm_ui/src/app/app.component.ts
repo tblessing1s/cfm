@@ -159,6 +159,9 @@ export class AppComponent implements OnInit {
   expiryFilterOptions: string[] = [];
   selectedExpiries: string[] = [];
   expiryFilterOpen = false;
+  baseLegFilterOptions: string[] = [];
+  selectedBaseLegIds: string[] = [];
+  baseLegFilterOpen = false;
   editingLedgerRowNumber: number | null = null;
   editingLedgerAccount?: string;
   expandedSummaries = new Set<string>();
@@ -671,6 +674,7 @@ export class AppComponent implements OnInit {
     this.selectedSides = [];
     this.selectedStrikes = [];
     this.selectedExpiries = [];
+    this.selectedBaseLegIds = [];
     this.portfolioExpiryStart = '';
     this.portfolioExpiryEnd = '';
     this.portfolioExpiryMin = undefined;
@@ -1632,6 +1636,37 @@ export class AppComponent implements OnInit {
     this.ledgerPage = 1;
   }
 
+  toggleBaseLegFilter(): void {
+    this.baseLegFilterOpen = !this.baseLegFilterOpen;
+  }
+
+  closeBaseLegFilter(): void {
+    this.baseLegFilterOpen = false;
+  }
+
+  isAllBaseLegsSelected(): boolean {
+    return (
+      this.baseLegFilterOptions.length > 0 &&
+      this.selectedBaseLegIds.length === this.baseLegFilterOptions.length
+    );
+  }
+
+  toggleAllBaseLegs(checked: boolean): void {
+    this.selectedBaseLegIds = checked ? [...this.baseLegFilterOptions] : [];
+    this.ledgerPage = 1;
+  }
+
+  toggleBaseLegSelection(baseLegId: string, checked: boolean): void {
+    const next = new Set(this.selectedBaseLegIds);
+    if (checked) {
+      next.add(baseLegId);
+    } else {
+      next.delete(baseLegId);
+    }
+    this.selectedBaseLegIds = Array.from(next);
+    this.ledgerPage = 1;
+  }
+
   toggleSummary(key: string): void {
     if (this.expandedSummaries.has(key)) {
       this.expandedSummaries.delete(key);
@@ -1975,6 +2010,7 @@ export class AppComponent implements OnInit {
     const sides = new Set<string>();
     const strikes = new Set<string>();
     const expiries = new Set<string>();
+    const baseLegIds = new Set<string>();
 
     summaries.forEach((summary) => {
       if (summary.ticker) {
@@ -1992,6 +2028,12 @@ export class AppComponent implements OnInit {
       if (expiry) {
         expiries.add(expiry);
       }
+      summary.rows?.forEach((row) => {
+        const value = (row.base_leg_id || '').toString().trim();
+        if (value) {
+          baseLegIds.add(value);
+        }
+      });
     });
 
     this.tickerFilterOptions = Array.from(tickers).sort();
@@ -2020,6 +2062,12 @@ export class AppComponent implements OnInit {
     if (this.selectedExpiries.length) {
       const available = new Set(this.expiryFilterOptions);
       this.selectedExpiries = this.selectedExpiries.filter((expiry) => available.has(expiry));
+    }
+
+    this.baseLegFilterOptions = Array.from(baseLegIds).sort();
+    if (this.selectedBaseLegIds.length) {
+      const available = new Set(this.baseLegFilterOptions);
+      this.selectedBaseLegIds = this.selectedBaseLegIds.filter((baseLegId) => available.has(baseLegId));
     }
   }
 
@@ -2145,6 +2193,13 @@ export class AppComponent implements OnInit {
 
   private filteredLedgerSummaries(): LedgerSummary[] {
     let summaries = this.ledgerSummaries;
+    if (this.selectedBaseLegIds.length) {
+      const selected = new Set(this.selectedBaseLegIds);
+      const rows = this.ledgerRows.filter((row) =>
+        selected.has((row.base_leg_id || '').toString().trim())
+      );
+      summaries = buildLedgerSummaries(rows, this.contractMultiplier);
+    }
     if (this.selectedTickers.length) {
       const selected = new Set(this.selectedTickers);
       summaries = summaries.filter((summary) => selected.has((summary.ticker || '').toUpperCase()));

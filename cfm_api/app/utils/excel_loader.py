@@ -507,10 +507,13 @@ def _refresh_alpha_cache(ticker: str, expiry: Any) -> None:
                 break
         if series is None:
             series = {}
-        # Filter to target month; intraday timestamps include time portion
+        if not series:
+            raise RuntimeError("Alpha Vantage returned no data")
+        # Filter to target month; intraday timestamps include time portion.
+        # If the month is missing, cache the full series so lookups still work.
         filtered = {k: v for k, v in series.items() if str(k).startswith(month_str)}
         if not filtered:
-            raise RuntimeError("Alpha Vantage returned no data for target month")
+            filtered = series
         cache_file = ALPHA_CACHE_DIR / f"{ticker}_{month_str}.json"
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         cache_file.write_text(json.dumps(filtered, indent=2), encoding="utf-8")
@@ -552,14 +555,38 @@ def _cached_underlying(ticker: str, expiry: Any, trade_dt: Any = None) -> Any:
         if pd.to_datetime(latest_ts) < trade_ts_lookup:
             refresh_needed = True
 
+    refresh_error: Exception | None = None
     if refresh_needed:
-        _refresh_alpha_cache(ticker, expiry_dt)
-        if not path.exists():
-            raise RuntimeError(f"Alpha cache refresh failed for {ticker} {month_str}")
-        with path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            raise RuntimeError(f"Alpha cache malformed for {ticker} {month_str}")
+        try:
+            _refresh_alpha_cache(ticker, expiry_dt)
+        except Exception as exc:
+            refresh_error = exc
+        if path.exists():
+            with path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                refresh_error = RuntimeError(f"Alpha cache malformed for {ticker} {month_str}")
+        else:
+            refresh_error = refresh_error or RuntimeError(f"Alpha cache refresh failed for {ticker} {month_str}")
+        # If refresh succeeded but the cache file is still missing, persist what we have.
+        if refresh_error is None and data:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        # If refresh failed, fall back to any cached month for this ticker.
+        if refresh_error is not None:
+            fallback = None
+            for candidate in sorted(ALPHA_CACHE_DIR.glob(f"{ticker}_*.json"), reverse=True):
+                try:
+                    with candidate.open("r", encoding="utf-8") as f:
+                        loaded = json.load(f)
+                    if isinstance(loaded, dict) and loaded:
+                        fallback = loaded
+                        break
+                except Exception:
+                    continue
+            if fallback is None:
+                raise RuntimeError(str(refresh_error))
+            data = fallback
 
     timestamps = sorted(data.keys())
     if not timestamps:

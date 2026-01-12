@@ -1413,7 +1413,8 @@
           tickerFilterOptions.length ||
           sideFilterOptions.length ||
           strikeFilterOptions.length ||
-          expiryFilterOptions.length
+          expiryFilterOptions.length ||
+          baseLegFilterOptions.length
         "
       >
         <div class="filter-dropdown" [class.open]="tickerFilterOpen" *ngIf="tickerFilterOptions.length">
@@ -1571,6 +1572,45 @@
         </div>
         <div class="text-xs text-muted" *ngIf="expiryFilterOptions.length && !selectedExpiries.length">
           All expiries selected
+        </div>
+        <div class="filter-dropdown" [class.open]="baseLegFilterOpen" *ngIf="baseLegFilterOptions.length">
+          <button
+            type="button"
+            class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft transition hover:border-accent/60 hover:text-text"
+            (click)="toggleBaseLegFilter()"
+          >
+            Base leg
+            <span class="rounded-full bg-accent/20 px-2 py-0.5 text-xs text-accent-strong" *ngIf="selectedBaseLegIds.length">
+              {{ selectedBaseLegIds.length }} selected
+            </span>
+          </button>
+          <div
+            class="absolute left-0 top-full z-10 mt-2 max-h-60 w-56 overflow-auto rounded-lg border border-border bg-surface p-2 shadow-xl shadow-[rgba(8,12,21,0.65)]"
+            *ngIf="baseLegFilterOpen"
+          >
+            <label class="flex items-center gap-2 px-1 py-1 text-sm text-text">
+              <input
+                type="checkbox"
+                class="h-4 w-4 rounded border-border bg-surface-2 text-accent focus:ring-2 focus:ring-accent/30"
+                [checked]="isAllBaseLegsSelected()"
+                (change)="toggleAllBaseLegs($event.target.checked)"
+              />
+              <span>Select all</span>
+            </label>
+            <div class="my-2 h-px bg-border"></div>
+            <label class="flex items-center gap-2 px-1 py-1 text-sm text-text" *ngFor="let baseLegId of baseLegFilterOptions">
+              <input
+                type="checkbox"
+                class="h-4 w-4 rounded border-border bg-surface-2 text-accent focus:ring-2 focus:ring-accent/30"
+                [checked]="selectedBaseLegIds.includes(baseLegId)"
+                (change)="toggleBaseLegSelection(baseLegId, $event.target.checked)"
+              />
+              <span>{{ baseLegId }}</span>
+            </label>
+          </div>
+        </div>
+        <div class="text-xs text-muted" *ngIf="baseLegFilterOptions.length && !selectedBaseLegIds.length">
+          All base legs selected
         </div>
       </div>
 
