@@ -268,6 +268,17 @@ export interface ProtectionMetrics {
   estimated_break_even_drop?: number;
 }
 
+export interface CashMovement {
+  movement_id: string;
+  account: string;
+  date: string;
+  direction: string;
+  purpose: string;
+  amount: number;
+  position_id?: string;
+  note?: string;
+}
+
 export interface TradeCreatePayload extends Trade {
   account: string;
 }
@@ -488,6 +499,21 @@ export class DashboardService {
 
   createReplacementCost(payload: ReplacementCost): Observable<ReplacementCost> {
     return this.http.post<ReplacementCost>(`${this.baseUrl}/replacement-costs`, payload);
+  }
+
+  listCashMovements(account?: string, positionId?: string): Observable<CashMovement[]> {
+    let params = new HttpParams();
+    if (account) {
+      params = params.set('account', account);
+    }
+    if (positionId) {
+      params = params.set('position_id', positionId);
+    }
+    return this.http.get<CashMovement[]>(`${this.baseUrl}/cash-movements`, params.keys().length ? { params } : {});
+  }
+
+  createCashMovement(payload: CashMovement): Observable<CashMovement> {
+    return this.http.post<CashMovement>(`${this.baseUrl}/cash-movements`, payload);
   }
 
   getAccounts(): Observable<AccountOption[]> {

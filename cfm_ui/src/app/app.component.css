@@ -640,6 +640,18 @@ header p {
   margin: 0;
 }
 
+.warning-text {
+  font-size: 0.85rem;
+  color: #b88500;
+  margin: 0.25rem 0 0;
+}
+
+.error-text {
+  font-size: 0.85rem;
+  color: #b00020;
+  margin: 0.25rem 0 0;
+}
+
 .help-icon {
   border: 1px solid var(--border);
   background: var(--surface-2);

@@ -18,6 +18,7 @@ from ..models.business import (
     StockDetail,
     RegimeEntry,
     ProtectionMetrics,
+    CashMovement,
 )
 from ..services import business_metrics
 from ..utils import business_loader
@@ -158,6 +159,21 @@ async def list_nav_snapshots(account: str | None = Query(None, description="Acco
 async def create_nav_snapshot(payload: NavSnapshot) -> NavSnapshot:
     created = business_loader.add_nav_snapshot(payload.model_dump())
     return NavSnapshot(**created)
+
+
+@router.get("/cash-movements", response_model=List[CashMovement])
+async def list_cash_movements(
+    account: str | None = Query(None, description="Account name or label"),
+    position_id: str | None = Query(None, description="Filter by base position id"),
+) -> List[CashMovement]:
+    df = business_loader.list_cash_movements(account, position_id=position_id)
+    return [CashMovement(**record) for record in df.to_dict("records")]
+
+
+@router.post("/cash-movements", response_model=CashMovement, status_code=201)
+async def create_cash_movement(payload: CashMovement) -> CashMovement:
+    created = business_loader.add_cash_movement(payload.model_dump())
+    return CashMovement(**created)
 
 
 @router.get("/base-legs", response_model=List[BaseLeg])

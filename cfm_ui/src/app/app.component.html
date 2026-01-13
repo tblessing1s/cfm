@@ -218,6 +218,62 @@
       </div>
     </section>
 
+    <section class="entry-card" *ngIf="activeBusinessView === 'cashflow'">
+      <div class="business-panel">
+        <div class="staged-header">
+          <div>
+            <h2>Cash movements</h2>
+            <p class="text-muted">Track deposits/withdrawals and what they were used for.</p>
+          </div>
+        </div>
+        <div class="metric-grid">
+          <div class="metric-card">
+            <div class="metric-label">Total deposits</div>
+            <div class="metric-value">{{ cashMovementTotal('DEPOSIT') | number:'1.2-2' }}</div>
+            <div class="metric-sub">
+              Extrinsic {{ cashMovementTotal('DEPOSIT', 'EXTRINSIC') | number:'1.2-2' }}
+              · Protection {{ cashMovementTotal('DEPOSIT', 'PROTECTION') | number:'1.2-2' }}
+            </div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Total withdrawals</div>
+            <div class="metric-value">{{ cashMovementTotal('WITHDRAWAL') | number:'1.2-2' }}</div>
+            <div class="metric-sub">
+              Extrinsic {{ cashMovementTotal('WITHDRAWAL', 'EXTRINSIC') | number:'1.2-2' }}
+              · Protection {{ cashMovementTotal('WITHDRAWAL', 'PROTECTION') | number:'1.2-2' }}
+            </div>
+          </div>
+        </div>
+        <div class="table-wrapper rounded-lg border border-border bg-surface-2/40 mt-3">
+          <table class="w-full border-collapse text-sm [&_th]:px-2 [&_th]:py-2 [&_td]:px-2 [&_td]:py-2 [&_th]:text-left [&_td]:text-left [&_tbody_tr]:border-b [&_tbody_tr]:border-border [&_tbody_tr:nth-child(even)]:bg-surface-2">
+            <thead class="text-xs uppercase tracking-wider text-muted">
+              <tr>
+                <th>Date</th>
+                <th>Direction</th>
+                <th>Purpose</th>
+                <th>Amount</th>
+                <th>Base</th>
+                <th>Note</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let move of cashMovements">
+                <td>{{ move.date | date:'yyyy-MM-dd' }}</td>
+                <td>{{ movementLabel(move.direction) }}</td>
+                <td>{{ movementLabel(move.purpose) }}</td>
+                <td>{{ move.amount || 0 | number:'1.2-2' }}</td>
+                <td>{{ positionLabel(move.position_id) }}</td>
+                <td>{{ move.note || '—' }}</td>
+              </tr>
+              <tr *ngIf="!cashMovements.length">
+                <td colspan="6" class="text-muted">No cash movements logged yet.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
     <section class="entry-card">
       <div class="business-panel">
         <div class="staged-header">
@@ -792,6 +848,9 @@
             <button type="button" class="btn-nav" [class.active]="selectedDataForm === 'nav'" (click)="setDataForm('nav')">
               Account value snapshot
             </button>
+            <button type="button" class="btn-nav" [class.active]="selectedDataForm === 'cash'" (click)="setDataForm('cash')">
+              Cash movement
+            </button>
             <button type="button" class="btn-nav" [class.active]="selectedDataForm === 'base'" (click)="setDataForm('base')">
               Base position
             </button>
@@ -883,6 +942,63 @@
               <div class="help-pop" *ngIf="visibleHelp === 'nav_withdrawals'">{{ fieldHelp.nav_withdrawals }}</div>
             </label>
             <button type="button" class="btn-primary mt-2" (click)="submitNavSnapshot()">Save NAV</button>
+          </div>
+
+          <div class="form-card" *ngIf="selectedDataForm === 'cash'">
+            <h4>Cash movement</h4>
+            <label>Date <input type="date" class="input-control" [(ngModel)]="cashMovementDraft.date" (ngModelChange)="updateCashMovementWarning()" /></label>
+            <label>
+              <span class="label-row">
+                Direction
+                <button type="button" class="help-icon" (click)="toggleHelp('cash_direction')">?</button>
+              </span>
+              <select class="input-control" [(ngModel)]="cashMovementDraft.direction" (ngModelChange)="updateCashMovementWarning()">
+                <option *ngFor="let opt of cashDirectionOptions" [ngValue]="opt">{{ movementLabel(opt) }}</option>
+              </select>
+              <div class="help-pop" *ngIf="visibleHelp === 'cash_direction'">{{ fieldHelp.cash_direction }}</div>
+            </label>
+            <label>
+              <span class="label-row">
+                Purpose
+                <button type="button" class="help-icon" (click)="toggleHelp('cash_purpose')">?</button>
+              </span>
+              <select class="input-control" [(ngModel)]="cashMovementDraft.purpose" (ngModelChange)="updateCashMovementWarning()">
+                <option *ngFor="let opt of cashPurposeOptions" [ngValue]="opt">{{ movementLabel(opt) }}</option>
+              </select>
+              <div class="help-pop" *ngIf="visibleHelp === 'cash_purpose'">{{ fieldHelp.cash_purpose }}</div>
+            </label>
+            <label>
+              <span class="label-row">
+                Base position (optional)
+                <button type="button" class="help-icon" (click)="toggleHelp('cash_position')">?</button>
+              </span>
+              <select class="input-control" [(ngModel)]="cashMovementDraft.position_id" (ngModelChange)="updateCashMovementWarning()">
+                <option [ngValue]="undefined">— No base —</option>
+                <option *ngFor="let pm of positionMetrics" [ngValue]="pm.position.position_id">
+                  {{ pm.position.symbol }} · {{ pm.position.strategy }} ({{ pm.position.base_type }})
+                </option>
+              </select>
+              <div class="help-pop" *ngIf="visibleHelp === 'cash_position'">{{ fieldHelp.cash_position }}</div>
+            </label>
+            <label>
+              <span class="label-row">
+                Amount
+                <button type="button" class="help-icon" (click)="toggleHelp('cash_amount')">?</button>
+              </span>
+              <input type="number" class="input-control" [(ngModel)]="cashMovementDraft.amount" (ngModelChange)="updateCashMovementWarning()" />
+              <div class="help-pop" *ngIf="visibleHelp === 'cash_amount'">{{ fieldHelp.cash_amount }}</div>
+            </label>
+            <label>
+              <span class="label-row">
+                Note
+                <button type="button" class="help-icon" (click)="toggleHelp('cash_note')">?</button>
+              </span>
+              <input type="text" class="input-control" [(ngModel)]="cashMovementDraft.note" />
+              <div class="help-pop" *ngIf="visibleHelp === 'cash_note'">{{ fieldHelp.cash_note }}</div>
+            </label>
+            <p class="warning-text" *ngIf="cashMovementWarning">{{ cashMovementWarning }}</p>
+            <p class="error-text" *ngIf="cashMovementError">{{ cashMovementError }}</p>
+            <button type="button" class="btn-primary mt-2" (click)="submitCashMovement()">Save cash movement</button>
           </div>
 
           <div class="form-card" *ngIf="selectedDataForm === 'base'">

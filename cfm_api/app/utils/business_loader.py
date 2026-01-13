@@ -154,6 +154,20 @@ regime_store = CsvStore(
     ],
 )
 
+cash_movements_store = CsvStore(
+    DATA_DIR / "cash_movements.csv",
+    [
+        "movement_id",
+        "account",
+        "date",
+        "direction",
+        "purpose",
+        "amount",
+        "position_id",
+        "note",
+    ],
+)
+
 # Run a one-time migration on import to move any remaining CSVs in the root to data
 def _migrate_legacy_csvs() -> None:
     if not JOURNAL_ROOT.exists():
@@ -241,6 +255,11 @@ def _upgrade_nav_store_columns() -> None:
     _upgrade_store_columns(nav_store)
 
 
+def _upgrade_cash_movements_store_columns() -> None:
+    """If the cash movements CSV exists but is missing new columns, rewrite it with the new header."""
+    _upgrade_store_columns(cash_movements_store)
+
+
 # NAV snapshots
 def list_nav(account: Optional[str] = None) -> pd.DataFrame:
     _upgrade_nav_store_columns()
@@ -262,6 +281,41 @@ def list_nav(account: Optional[str] = None) -> pd.DataFrame:
         df = df[df["account"].str.lower() == acct.lower()]
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     return df
+
+
+def list_cash_movements(account: Optional[str] = None, position_id: Optional[str] = None) -> pd.DataFrame:
+    _upgrade_cash_movements_store_columns()
+    df = cash_movements_store.load()
+    if df.empty:
+        return df
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+    if account:
+        normalized = _require_account(account)
+        df["account"] = df["account"].astype(str)
+        df = df[df["account"].str.lower() == normalized.lower()]
+    if position_id:
+        df["position_id"] = df["position_id"].astype(str)
+        df = df[df["position_id"] == position_id]
+    return df
+
+
+def add_cash_movement(payload: Dict[str, Any]) -> Dict[str, Any]:
+    account = payload.get("account")
+    if not account:
+        raise ValueError("Account is required for cash movement")
+    normalized_account = _require_account(account)
+    row = {
+        "movement_id": payload.get("movement_id") or _uuid(),
+        "account": normalized_account,
+        "date": payload.get("date"),
+        "direction": str(payload.get("direction") or "").upper(),
+        "purpose": str(payload.get("purpose") or "").upper(),
+        "amount": payload.get("amount"),
+        "position_id": payload.get("position_id") or None,
+        "note": payload.get("note") or "",
+    }
+    cash_movements_store.append_rows([row])
+    return row
 
 
 def add_nav_snapshot(payload: Dict[str, Any]) -> Dict[str, Any]:

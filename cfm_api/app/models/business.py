@@ -252,3 +252,16 @@ class ProtectionMetrics(BaseModel):
     defense_cost: float
     cumulative_income: float
     estimated_break_even_drop: Optional[float] = None
+
+
+class CashMovement(BaseModel):
+    movement_id: str
+    account: str
+    date: date
+    direction: str
+    purpose: str
+    amount: float
+    position_id: Optional[str] = None
+    note: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)

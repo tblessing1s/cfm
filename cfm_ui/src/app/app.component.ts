@@ -19,6 +19,7 @@ import {
   StockDetail,
   RegimeEntry,
   ProtectionMetrics,
+  CashMovement,
 } from './services/dashboard.service';
 import {
   ExpiryMonthGroup,
@@ -205,6 +206,10 @@ export class AppComponent implements OnInit {
   tradeConditionOptions = ['GREEN', 'YELLOW', 'RED'];
   reserveDraft: ReserveRow = this.buildBlankReserve();
   replacementDraft: ReplacementCost = this.buildBlankReplacement();
+  cashMovementDraft: CashMovement = this.buildBlankCashMovement();
+  cashMovements: CashMovement[] = [];
+  cashMovementWarning?: string;
+  cashMovementError?: string;
   selectedPositionId?: string;
   defaultReservePct = 0.05;
   navChartWidth = 360;
@@ -212,11 +217,14 @@ export class AppComponent implements OnInit {
   // Targets for coloring
   weeklyYieldTargetPct = 0.5; // % of NAV
   monthlyYieldTargetPct = 2.0; // % of NAV
-  selectedDataForm: 'nav' | 'base' | 'leg' = 'nav';
+  selectedDataForm: 'nav' | 'base' | 'leg' | 'cash' = 'nav';
+  cashDirectionOptions = ['DEPOSIT', 'WITHDRAWAL'];
+  cashPurposeOptions = ['ACCOUNT', 'EXTRINSIC', 'PROTECTION'];
   dataFormHelp: Record<string, { label: string; when: string }> = {
     nav: { label: 'Account value snapshot', when: 'Log account net liq (NAV) weekly or daily; include free cash, deposits, withdrawals.' },
     base: { label: 'Base position', when: 'Create once per engine/symbol before logging base legs or reserves.' },
     leg: { label: 'Base leg', when: 'Whenever you buy/sell/roll the base (shares/long options).' },
+    cash: { label: 'Cash movement', when: 'Track cash added/removed and what it was used for (account, extrinsic, protection).' },
     reserve: { label: 'Reserve', when: 'When you earmark cash for a base or adjust required reserves.' },
     replacement: { label: 'Replacement cost', when: 'When you update manual replacement pricing for a base.' },
   };
@@ -244,6 +252,11 @@ export class AppComponent implements OnInit {
     leg_intrinsic: 'Computed intrinsic portion of the premium (not stored).',
     leg_extrinsic: 'Computed extrinsic portion of the premium (not stored).',
     leg_condition: 'Condition when logging this leg: GREEN (growth OK), YELLOW/RED (stay in cash).',
+    cash_direction: 'Deposit adds cash; withdrawal pulls cash out of the account.',
+    cash_purpose: 'What the cash is intended for: general account, extrinsic paydown, or intrinsic protection.',
+    cash_position: 'Optional base position tied to the movement for tracking.',
+    cash_amount: 'Dollar amount of the movement.',
+    cash_note: 'Optional note about why the cash moved.',
     reserve_position: 'Base position this reserve is tied to.',
     reserve_cash: 'Cash earmarked for this base to cover rolls/assignments.',
     reserve_note: 'Rule or reason for this reserve.',
@@ -265,6 +278,7 @@ export class AppComponent implements OnInit {
         if (accounts.length) {
           this.selectedAccount = accounts[0].name;
           this.tradeDraft.account = this.selectedAccount;
+          this.cashMovementDraft = this.buildBlankCashMovement(this.selectedAccount);
           this.trades = [];
           this.loadMetrics();
           this.loadPortfolio();
@@ -524,11 +538,26 @@ export class AppComponent implements OnInit {
           if (this.selectedPositionId) {
             this.applyReserveDefault(this.selectedPositionId);
           }
+          this.updateCashMovementWarning();
         },
         error: () => {
           this.positionMetrics = [];
         },
       });
+    this.loadCashMovements(this.selectedAccount);
+  }
+
+  loadCashMovements(account: string): void {
+    this.dashboardService.listCashMovements(account).subscribe({
+      next: (rows) => {
+        this.cashMovements = [...rows].sort(
+          (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+        );
+      },
+      error: () => {
+        this.cashMovements = [];
+      },
+    });
   }
 
   private computeConditions(): void {
@@ -737,6 +766,9 @@ export class AppComponent implements OnInit {
 
     this.selectedAccount = accountName;
     this.tradeDraft.account = accountName;
+    this.cashMovementDraft = this.buildBlankCashMovement(accountName);
+    this.updateCashMovementWarning();
+    this.cashMovementError = undefined;
     this.selectedTradePositionId = undefined;
     this.tradeTickerLocked = false;
     this.tradeStrategyLocked = false;
@@ -994,10 +1026,51 @@ export class AppComponent implements OnInit {
     });
   }
 
-  setDataForm(form: 'nav' | 'base' | 'leg'): void {
+  submitCashMovement(): void {
+    if (!this.selectedAccount || !this.cashMovementDraft.date) {
+      this.cashMovementError = 'Select account and date for the cash movement.';
+      return;
+    }
+    const amount = this.toNumber(this.cashMovementDraft.amount);
+    if (!amount || amount <= 0) {
+      this.cashMovementError = 'Enter a valid cash amount.';
+      return;
+    }
+    if (!this.cashMovementDraft.direction || !this.cashMovementDraft.purpose) {
+      this.cashMovementError = 'Select direction and purpose.';
+      return;
+    }
+    this.cashMovementError = undefined;
+    const payload: CashMovement = {
+      ...this.cashMovementDraft,
+      account: this.selectedAccount,
+      amount,
+      direction: this.cashMovementDraft.direction.toUpperCase(),
+      purpose: this.cashMovementDraft.purpose.toUpperCase(),
+    };
+    this.dashboardService.createCashMovement(payload).subscribe({
+      next: () => {
+        this.businessSuccess = 'Saved cash movement.';
+        this.businessError = undefined;
+        this.cashMovementError = undefined;
+        this.cashMovementDraft = this.buildBlankCashMovement(this.selectedAccount);
+        this.updateCashMovementWarning();
+        this.loadCashMovements(this.selectedAccount);
+      },
+      error: () => {
+        this.cashMovementError = 'Unable to save cash movement.';
+      },
+    });
+  }
+
+  setDataForm(form: 'nav' | 'base' | 'leg' | 'cash'): void {
     this.selectedDataForm = form;
     if (form === 'leg') {
       this.loadBaseLegOptions(this.selectedPositionId);
+    }
+    if (form === 'cash') {
+      this.cashMovementDraft.position_id = this.selectedPositionId || undefined;
+      this.updateCashMovementWarning();
     }
   }
 
@@ -1007,6 +1080,8 @@ export class AppComponent implements OnInit {
     this.baseLegDraft.position_id = pid;
     this.reserveDraft.position_id = pid;
     this.replacementDraft.position_id = pid;
+    this.cashMovementDraft.position_id = pid || undefined;
+    this.updateCashMovementWarning();
     this.selectedBaseLegId = '';
     this.baseLegOptions = [];
     this.baseLegLookup = {};
@@ -1049,6 +1124,45 @@ export class AppComponent implements OnInit {
       this.navDraft.nav_cash = cash;
       this.navDraft.nav_long_value = positions;
       this.navDraft.nav_liabilities = liabilities || undefined;
+    }
+  }
+
+  updateCashMovementWarning(): void {
+    this.cashMovementWarning = undefined;
+    const amount = this.toNumber(this.cashMovementDraft.amount);
+    if (!amount || amount <= 0) {
+      return;
+    }
+    const direction = (this.cashMovementDraft.direction || '').toUpperCase();
+    const purpose = (this.cashMovementDraft.purpose || '').toUpperCase();
+    const positionId = this.cashMovementDraft.position_id;
+
+    if (!positionId) {
+      if (purpose === 'EXTRINSIC' || purpose === 'PROTECTION') {
+        this.cashMovementWarning = 'No base selected; this will be tracked at the account level only.';
+      }
+      return;
+    }
+
+    const pm = this.positionMetrics.find((p) => p.position.position_id === positionId);
+    if (!pm || direction !== 'WITHDRAWAL') {
+      return;
+    }
+
+    const remainingExtrinsic = Math.max(0, (pm.initial_base_extrinsic ?? 0) - (pm.net_juice_to_date ?? 0));
+    const initialIntrinsic = pm.initial_base_intrinsic ?? 0;
+    const currentIntrinsic = pm.current_base_intrinsic ?? 0;
+    const protection = pm.net_intrinsic_to_date ?? 0;
+    const protectionGap = Math.max(0, initialIntrinsic - (currentIntrinsic + protection));
+
+    if (amount > remainingExtrinsic + this.statusEps) {
+      const overage = amount - remainingExtrinsic;
+      const extrinsicText = this.formatNumber(remainingExtrinsic, '1.2-2');
+      const overageText = this.formatNumber(overage, '1.2-2');
+      const gapText = this.formatNumber(protectionGap, '1.2-2');
+      this.cashMovementWarning =
+        `Withdrawal exceeds remaining extrinsic (~${extrinsicText}) by ${overageText}. ` +
+        (protectionGap > this.statusEps ? `Intrinsic gap is ~${gapText}; excess could erode protection.` : 'Excess could erode intrinsic protection.');
     }
   }
 
@@ -1218,6 +1332,28 @@ export class AppComponent implements OnInit {
     if (extrinsic > eps && gap > eps) return 'Reduce extrinsic and add short intrinsic.';
     if (extrinsic > eps) return 'Reduce extrinsic with short income.';
     return 'Add short intrinsic protection.';
+  }
+
+  cashMovementTotal(direction?: string, purpose?: string): number {
+    const dir = direction ? direction.toUpperCase() : undefined;
+    const purp = purpose ? purpose.toUpperCase() : undefined;
+    return this.cashMovements
+      .filter((m) => (dir ? (m.direction || '').toUpperCase() === dir : true))
+      .filter((m) => (purp ? (m.purpose || '').toUpperCase() === purp : true))
+      .reduce((sum, m) => sum + (Number(m.amount) || 0), 0);
+  }
+
+  movementLabel(value?: string): string {
+    if (!value) return '';
+    const lower = value.toLowerCase();
+    return lower.charAt(0).toUpperCase() + lower.slice(1);
+  }
+
+  positionLabel(positionId?: string): string {
+    if (!positionId) return '—';
+    const pm = this.positionMetrics.find((p) => p.position.position_id === positionId);
+    if (!pm) return positionId;
+    return `${pm.position.symbol} · ${pm.position.strategy}`;
   }
 
   navSeriesForChart(): any[] {
@@ -1930,6 +2066,20 @@ export class AppComponent implements OnInit {
       amount: 0,
       tag: 'OPEN',
       condition: undefined,
+    };
+  }
+
+  private buildBlankCashMovement(account?: string): CashMovement {
+    const today = new Date().toISOString().slice(0, 10);
+    return {
+      movement_id: this.newId(),
+      account: account || '',
+      date: today,
+      direction: 'DEPOSIT',
+      purpose: 'ACCOUNT',
+      amount: 0,
+      position_id: undefined,
+      note: '',
     };
   }
 
