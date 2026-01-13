@@ -61,7 +61,7 @@ def _ensure_schwab():
 # Alpha Vantage API configuration
 ALPHA_VANTAGE_API_KEY = "OXVB6OE4LG9JETYB"
 ALPHA_VANTAGE_BASE_URL = "https://www.alphavantage.co/query"
-ALPHA_CACHE_DIR = Path("alpha_cache")
+ALPHA_CACHE_DIR = Path(__file__).resolve().parent / "alpha_cache"
 _ALPHA_VANTAGE_CACHE = {}
 
 # Schwab API configuration
@@ -506,15 +506,27 @@ def _load_alpha_cache(symbol_upper: str, month_str: str) -> Optional[dict]:
         return None
     try:
         with path.open("r", encoding="utf-8") as f:
-            return json.load(f)
+            payload = json.load(f)
     except Exception:
         return None
+    if isinstance(payload, dict) and payload.get("__alpha_cache_format__") == "raw":
+        return payload.get("time_series") or None
+    if isinstance(payload, dict) and "Time Series (1min)" in payload:
+        return payload.get("Time Series (1min)") or None
+    return payload
 
 
-def _save_alpha_cache(symbol_upper: str, month_str: str, data: dict):
+def _save_alpha_cache(symbol_upper: str, month_str: str, data: dict, raw: bool = False):
     path = _alpha_cache_path(symbol_upper, month_str)
+    payload = data
+    if raw:
+        payload = {
+            "__alpha_cache_format__": "raw",
+            "raw": data,
+            "time_series": data.get("Time Series (1min)") if isinstance(data, dict) else None,
+        }
     with path.open("w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+        json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
 def _find_intraday_minute(time_series: dict, eastern_time: datetime):
@@ -627,6 +639,7 @@ def fetch_alpha_vantage_time_series(symbol: str, eastern_time: datetime):
 
         print(f"Response Status: {response.status_code}")
         data = response.json()
+        _save_alpha_cache(symbol_upper, month_str, data, raw=True)
 
         print("API Response:")
         print(json.dumps(data, indent=2))
@@ -646,7 +659,6 @@ def fetch_alpha_vantage_time_series(symbol: str, eastern_time: datetime):
             print(f"No time series data found for {symbol_upper}")
             return None
         _ALPHA_VANTAGE_CACHE[cache_key] = time_series
-        _save_alpha_cache(symbol_upper, month_str, time_series)
         daily_count = sum(1 for time_str in time_series if time_str.startswith(target_date))
         if daily_count:
             print(f"Found {daily_count} data points for {symbol_upper} on {target_date}")

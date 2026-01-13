@@ -53,16 +53,8 @@ def _ledger_by_expiry(account: Optional[str] = None, ticker: Optional[str] = Non
     df = pd.DataFrame(rows)
     if df.empty:
         return df
-
-    df["expiry"] = pd.to_datetime(df.get("expiry"), errors="coerce")
-    if "signed_juice_dollars" in df.columns:
-        df["signed_juice_dollars"] = pd.to_numeric(df.get("signed_juice_dollars"), errors="coerce")
-    else:
-        df["signed_juice_dollars"] = None
-
-    missing_mask = df["signed_juice_dollars"].isna()
-    if missing_mask.any():
-        df.loc[missing_mask, "signed_juice_dollars"] = df.loc[missing_mask].apply(_signed_juice_from_row, axis=1)
+    df = _ensure_signed_juice(df)
+    df = _coerce_expiry(df)
 
     if ticker:
         df["ticker"] = df.get("ticker").astype(str).str.upper()
@@ -125,12 +117,65 @@ def _signed_juice_from_row(row: pd.Series) -> float | None:
     if not pd.isna(strike) and not pd.isna(underlying):
         intrinsic = max(0, strike - underlying) if is_put else max(0, underlying - strike)
         extrinsic = premium - intrinsic
+        if is_close:
+            juice_per_contract = abs(extrinsic) if extrinsic < 0 else -extrinsic
+        else:
+            juice_per_contract = extrinsic
     else:
-        extrinsic = premium
-    if is_close:
-        extrinsic = max(0, extrinsic)
-    juice_per_contract = extrinsic
+        if is_close:
+            juice_per_contract = abs(premium) if premium < 0 else -premium
+        else:
+            juice_per_contract = premium
+    juice_per_contract = round(float(juice_per_contract), 2)
     return round(float(juice_per_contract * contracts * CONTRACT_MULTIPLIER), 2)
+
+
+def _ensure_signed_juice(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure signed_juice_dollars is present and numeric."""
+    df = df.copy()
+    df["signed_juice_dollars"] = pd.to_numeric(df.get("signed_juice_dollars"), errors="coerce")
+    missing = df["signed_juice_dollars"].isna()
+    if missing.any():
+        df.loc[missing, "signed_juice_dollars"] = df.loc[missing].apply(_signed_juice_from_row, axis=1)
+    return df
+
+
+def _coerce_expiry(df: pd.DataFrame) -> pd.DataFrame:
+    if "expiry" not in df.columns:
+        return df
+    df = df.copy()
+    df["expiry"] = pd.to_datetime(df.get("expiry"), errors="coerce")
+    return df
+
+
+def _apply_expiry_filter(
+    df: pd.DataFrame,
+    expiry_start: Optional[pd.Timestamp],
+    expiry_end: Optional[pd.Timestamp],
+) -> pd.DataFrame:
+    if expiry_start is None and expiry_end is None:
+        return df
+    if "expiry" not in df.columns:
+        return df
+    df = _coerce_expiry(df)
+    normalized = df["expiry"].dt.normalize()
+    if expiry_start is not None:
+        df = df[normalized >= expiry_start]
+    if expiry_end is not None:
+        df = df[normalized <= expiry_end]
+    return df
+
+
+def _prepare_ledger_group_fields(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["action"] = df.get("action", "").astype(str).str.lower()
+    df["contracts"] = pd.to_numeric(df.get("contracts"), errors="coerce").fillna(0.0)
+    df["ticker"] = df.get("ticker").astype(str).str.upper()
+    df["side"] = df.get("side").astype(str)
+    df["strike"] = pd.to_numeric(df.get("strike"), errors="coerce")
+    df["expiry"] = df.get("expiry")
+    df["net_contracts_delta"] = df["contracts"].where(~df["action"].str.contains("close", na=False), -df["contracts"])
+    return df
 
 
 def _net_juice_for_symbol(account: Optional[str], symbol: str) -> float:
@@ -182,19 +227,8 @@ def _ledger_income(
     df = pd.DataFrame(rows)
     if df.empty:
         return 0.0
-
-    df["signed_juice_dollars"] = pd.to_numeric(df.get("signed_juice_dollars"), errors="coerce")
-    missing = df["signed_juice_dollars"].isna()
-    if missing.any():
-        df.loc[missing, "signed_juice_dollars"] = df.loc[missing].apply(_signed_juice_from_row, axis=1)
-    if "expiry" in df.columns:
-        df["expiry"] = pd.to_datetime(df.get("expiry"), errors="coerce")
-    if (expiry_start is not None or expiry_end is not None) and "expiry" in df.columns:
-        normalized = df["expiry"].dt.normalize()
-        if expiry_start is not None:
-            df = df[normalized >= expiry_start]
-        if expiry_end is not None:
-            df = df[normalized <= expiry_end]
+    df = _ensure_signed_juice(df)
+    df = _apply_expiry_filter(df, expiry_start, expiry_end)
     if ticker:
         df["ticker"] = df.get("ticker").astype(str).str.upper()
         df = df[df["ticker"] == ticker.upper()]
@@ -232,6 +266,21 @@ def _protection_allocation(original_base: Optional[float], current_base: Optiona
     return gap, 0.0, float(income), gap
 
 
+def _rebalance_extrinsic_to_protection(
+    initial_extrinsic: Optional[float],
+    net_juice: float,
+    protection_gap: float,
+) -> float:
+    """Move excess extrinsic into protection once extrinsic is paid off."""
+    if initial_extrinsic is None:
+        return 0.0
+    remaining_extrinsic = float(initial_extrinsic) - float(net_juice)
+    if remaining_extrinsic > 0 or protection_gap <= 0:
+        return 0.0
+    excess = abs(remaining_extrinsic)
+    return min(excess, protection_gap)
+
+
 def _short_intrinsic_realized_for_position(
     account: Optional[str],
     symbol: str,
@@ -242,27 +291,13 @@ def _short_intrinsic_realized_for_position(
     expiry_start: Optional[pd.Timestamp] = None,
     expiry_end: Optional[pd.Timestamp] = None,
 ) -> float:
-    """Net short intrinsic protection = open intrinsic - close intrinsic."""
+    """Net short intrinsic protection from ledger (realized only)."""
     rows = excel_loader.get_ledger_rows(account)
     df = pd.DataFrame(rows)
     if df.empty:
         return 0.0
-    if base_leg_ids is not None:
-        if not base_leg_ids:
-            return 0.0
-        if "base_leg_id" in df.columns:
-            ids = {str(val) for val in base_leg_ids if val}
-            if not ids:
-                return 0.0
-            df["base_leg_id"] = df.get("base_leg_id").astype(str)
-            df = df[df["base_leg_id"].isin(ids)]
-        else:
-            return 0.0
-    elif base_position_id:
-        df = df[df.get("base_position_id") == base_position_id]
-    else:
-        df["ticker"] = df["ticker"].astype(str).str.upper()
-        df = df[df["ticker"] == symbol.upper()]
+    base_position_ids = [base_position_id] if base_position_id else None
+    df = _filter_ledger_scope(df, base_leg_ids, base_position_ids, symbol)
     if df.empty:
         return 0.0
     df["action"] = df.get("action", "").astype(str).str.lower()
@@ -271,34 +306,11 @@ def _short_intrinsic_realized_for_position(
         df = df[df["date"] >= opened_date]
     if closed_date is not None:
         df = df[df["date"] <= closed_date]
-    if "expiry" in df.columns:
-        df["expiry"] = pd.to_datetime(df.get("expiry"), errors="coerce")
-    if (expiry_start is not None or expiry_end is not None) and "expiry" in df.columns:
-        normalized = df["expiry"].dt.normalize()
-        if expiry_start is not None:
-            df = df[normalized >= expiry_start]
-        if expiry_end is not None:
-            df = df[normalized <= expiry_end]
+    df = _apply_expiry_filter(df, expiry_start, expiry_end)
     if df.empty:
         return 0.0
 
-    df["contracts"] = pd.to_numeric(df.get("contracts"), errors="coerce")
-    df["strike"] = pd.to_numeric(df.get("strike"), errors="coerce")
-    df["underlying"] = pd.to_numeric(df.get("underlying"), errors="coerce")
-    df["side"] = df.get("side", "").astype(str).str.lower()
-
-    def _row_intrinsic(row: pd.Series) -> float:
-        contracts = row.get("contracts")
-        strike = row.get("strike")
-        underlying = row.get("underlying")
-        if pd.isna(contracts) or pd.isna(strike) or pd.isna(underlying):
-            return 0.0
-        is_put = "put" in (row.get("side") or "")
-        intrinsic_per = max(0.0, strike - underlying) if is_put else max(0.0, underlying - strike)
-        return float(intrinsic_per) * float(contracts) * CONTRACT_MULTIPLIER
-    open_intrinsic = float(df[df["action"].str.contains("open", na=False)].apply(_row_intrinsic, axis=1).sum())
-    close_intrinsic = float(df[df["action"].str.contains("close", na=False)].apply(_row_intrinsic, axis=1).sum())
-    return float(open_intrinsic - close_intrinsic)
+    return _net_protection_from_ledger(df)
 
 
 def _long_extrinsic_loan_from_legs(
@@ -504,6 +516,123 @@ def _open_base_leg_ids(legs: pd.DataFrame) -> List[str]:
         delta = qty if side == "BUY" else -qty
         net[leg_id] = net.get(leg_id, 0.0) + float(delta)
     return [lid for lid, qty in net.items() if qty > 0 and has_mark.get(lid)]
+
+
+def _marked_base_leg_ids(legs: pd.DataFrame) -> List[str]:
+    """Return base_leg_ids that have a MARK tag."""
+    if legs.empty or not {"base_leg_id", "tag"}.issubset(legs.columns):
+        return []
+    marked = legs[legs["tag"].astype(str).str.upper() == "MARK"]
+    if marked.empty:
+        return []
+    ids = marked["base_leg_id"].dropna().astype(str).str.strip()
+    return [val for val in dict.fromkeys(ids.tolist()) if val]
+
+
+def _filter_ledger_scope(
+    df: pd.DataFrame,
+    base_leg_ids: Optional[List[str]] = None,
+    base_position_ids: Optional[List[str]] = None,
+    ticker: Optional[str] = None,
+) -> pd.DataFrame:
+    """Filter ledger rows to the provided base leg ids only."""
+    if df.empty:
+        return df
+    if base_leg_ids and "base_leg_id" in df.columns:
+        ids = {str(val).strip().lower() for val in base_leg_ids if val}
+        if ids:
+            scoped = df[df["base_leg_id"].astype(str).str.strip().str.lower().isin(ids)]
+            if not scoped.empty:
+                return scoped
+    return df.iloc[0:0]
+
+
+def _net_juice_for_base_legs(
+    account: Optional[str],
+    base_leg_ids: Optional[List[str]],
+    base_position_ids: Optional[List[str]] = None,
+    ticker: Optional[str] = None,
+    expiry_start: Optional[pd.Timestamp] = None,
+    expiry_end: Optional[pd.Timestamp] = None,
+) -> float:
+    """Net short juice for closed shorts (open+close pairs) using base leg ids only."""
+    rows = excel_loader.get_ledger_rows(account)
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return 0.0
+    if not base_leg_ids:
+        return 0.0
+    df = _filter_ledger_scope(df, base_leg_ids)
+    if df.empty:
+        return 0.0
+    df = _ensure_signed_juice(df)
+    df = _apply_expiry_filter(df, expiry_start, expiry_end)
+    df = df.dropna(subset=["signed_juice_dollars"])
+    if df.empty:
+        return 0.0
+    df = _prepare_ledger_group_fields(df)
+    grouped = (
+        df.groupby(["ticker", "side", "strike", "expiry"], dropna=False)
+        .agg(net_contracts=("net_contracts_delta", "sum"))
+        .reset_index()
+    )
+    closed_groups = grouped[grouped["net_contracts"] == 0]
+    if closed_groups.empty:
+        return 0.0
+    df = df.merge(closed_groups, on=["ticker", "side", "strike", "expiry"], how="inner")
+    return float(df["signed_juice_dollars"].sum())
+
+
+def _net_protection_from_ledger(df: pd.DataFrame) -> float:
+    """Net protection for closed shorts (open+close pairs)."""
+    if df.empty:
+        return 0.0
+    df = df.copy()
+    df = _ensure_signed_juice(df)
+    df["premium_buyback"] = pd.to_numeric(df.get("premium_buyback"), errors="coerce")
+    df = df.dropna(subset=["premium_buyback", "signed_juice_dollars"])
+    if df.empty:
+        return 0.0
+
+    def protection_delta(row: pd.Series) -> float:
+        premium_total = float(row["premium_buyback"]) * float(row["contracts"]) * CONTRACT_MULTIPLIER
+        protection = premium_total - abs(float(row["signed_juice_dollars"]))
+        if "close" in str(row["action"]):
+            return -abs(protection)
+        return abs(protection)
+
+    df = _prepare_ledger_group_fields(df)
+    grouped = (
+        df.groupby(["ticker", "side", "strike", "expiry"], dropna=False)
+        .agg(net_contracts=("net_contracts_delta", "sum"))
+        .reset_index()
+    )
+    closed_groups = grouped[grouped["net_contracts"] == 0]
+    if closed_groups.empty:
+        return 0.0
+    df = df.merge(closed_groups, on=["ticker", "side", "strike", "expiry"], how="inner")
+    df["protection_delta"] = df.apply(protection_delta, axis=1)
+    return float(df["protection_delta"].sum())
+
+
+def _net_protection_for_base_legs(
+    account: Optional[str],
+    base_leg_ids: Optional[List[str]],
+    base_position_ids: Optional[List[str]] = None,
+    ticker: Optional[str] = None,
+    expiry_start: Optional[pd.Timestamp] = None,
+    expiry_end: Optional[pd.Timestamp] = None,
+) -> float:
+    """Sum net protection for base leg ids (realized only)."""
+    rows = excel_loader.get_ledger_rows(account)
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return 0.0
+    df = _filter_ledger_scope(df, base_leg_ids, base_position_ids, ticker)
+    if df.empty:
+        return 0.0
+    df = _apply_expiry_filter(df, expiry_start, expiry_end)
+    return _net_protection_from_ledger(df)
 
 
 def _short_extrinsic_net_for_position(
@@ -1160,10 +1289,15 @@ def stock_summary_rows(
             expiry_start=expiry_start_ts,
             expiry_end=expiry_end_ts,
         )
-        income_total_realized = _income_after_base_protection(original_base_value, current_base_value, protection, raw_income)
-        gap, applied, income_after, juice_needed = _protection_allocation(denom_intrinsic, current_base_value, protection, raw_income)
         current_intrinsic = pm.current_base_intrinsic or 0.0
         intrinsic_gap = max(0.0, (initial_intrinsic or 0.0) - (current_intrinsic + (protection or 0.0)))
+        rebalance = _rebalance_extrinsic_to_protection(initial_extrinsic, raw_income, intrinsic_gap)
+        protection_effective = (protection or 0.0) + rebalance
+        base_strength_ratio = _safe_ratio((current_base_value or 0) + protection_effective, denom_intrinsic)
+        income_adjusted = float(raw_income) - rebalance
+        income_total_realized = _income_after_base_protection(original_base_value, current_base_value, protection_effective, income_adjusted)
+        gap, applied, income_after, juice_needed = _protection_allocation(denom_intrinsic, current_base_value, protection_effective, income_adjusted)
+        intrinsic_gap = max(0.0, (initial_intrinsic or 0.0) - (current_intrinsic + protection_effective))
         income_efficiency = _safe_ratio(income_total_realized, denom_intrinsic)
         week_income, month_income = _stock_income_rates(
             account,
@@ -1182,14 +1316,14 @@ def stock_summary_rows(
                 initial_base_intrinsic=_clean_number(pm.initial_base_intrinsic),
                 initial_base_extrinsic=_clean_number(pm.initial_base_extrinsic),
                 current_base_intrinsic=_clean_number(pm.current_base_intrinsic),
-                total_protection_collected=_clean_number(protection),
+                total_protection_collected=_clean_number(protection_effective),
                 base_strength_ratio=_clean_number(base_strength_ratio),
                 base_market_value_change=_clean_number(base_market_value_change),
                 base_growth_pct=_clean_number(base_growth_pct),
                 income_total_realized=float(income_total_realized),
                 income_after_protection=_clean_number(income_after),
                 protection_gap=_clean_number(intrinsic_gap),
-                protection_juice_applied=_clean_number(applied),
+                protection_juice_applied=_clean_number((applied or 0.0) + rebalance),
                 juice_needed_for_protection=_clean_number(juice_needed),
                 income_rate_weekly=_clean_number(week_income),
                 income_rate_monthly=_clean_number(month_income),
@@ -1306,10 +1440,13 @@ def stock_detail(
         return StockDetail(ticker=ticker)
 
     pm = rows[0]
-    open_leg_ids: List[str] = []
-    legs = business_loader.list_base_legs(pm.position.position_id)
-    if not legs.empty:
-        open_leg_ids = _open_base_leg_ids(legs)
+    marked_leg_ids: List[str] = []
+    for row in rows:
+        legs = business_loader.list_base_legs(row.position.position_id)
+        marked_leg_ids.extend(_marked_base_leg_ids(legs))
+    if marked_leg_ids:
+        marked_leg_ids = list(dict.fromkeys(marked_leg_ids))
+    base_position_ids = [row.position.position_id for row in rows]
     total_long_extrinsic_loan = sum((r.long_extrinsic_loan or 0.0) for r in rows)
     total_long_extrinsic_paid = sum((r.long_extrinsic_paid or 0.0) for r in rows)
     total_long_extrinsic_remaining = sum((r.long_extrinsic_remaining or 0.0) for r in rows)
@@ -1324,34 +1461,49 @@ def stock_detail(
     initial_extrinsic = pm.initial_base_extrinsic or 0.0
     original_base_value = (initial_intrinsic + initial_extrinsic) or pm.initial_base_cost or pm.base_cost
     current_base_value = pm.base_value
-    protection = pm.net_intrinsic_to_date
-    denom_intrinsic = initial_intrinsic or original_base_value
-    base_strength_ratio = _safe_ratio((current_base_value or 0) + (protection or 0), denom_intrinsic)
-    base_growth_pct = None
-    if denom_intrinsic:
-        base_growth_pct = _safe_ratio((current_base_value or 0) - denom_intrinsic, denom_intrinsic)
-
-    opened = pd.to_datetime(pm.position.opened_date, errors="coerce")
-    closed = pd.to_datetime(pm.position.closed_date, errors="coerce")
-    raw_income = _short_extrinsic_net_for_position(
+    protection = _net_protection_for_base_legs(
         account,
-        ticker,
-        base_position_id=pm.position.position_id,
-        base_leg_ids=open_leg_ids,
-        opened_date=opened if not pd.isna(opened) else None,
-        closed_date=closed if not pd.isna(closed) else None,
+        marked_leg_ids,
+        base_position_ids=base_position_ids,
+        ticker=ticker,
         expiry_start=expiry_start_ts,
         expiry_end=expiry_end_ts,
     )
-    gap, applied, income_after, juice_needed = _protection_allocation(denom_intrinsic, current_base_value, protection, raw_income)
+    opened = pd.to_datetime(pm.position.opened_date, errors="coerce")
+    closed = pd.to_datetime(pm.position.closed_date, errors="coerce")
+    raw_income = _ledger_income(
+        account,
+        ticker,
+        base_position_id=pm.position.position_id,
+        expiry_start=expiry_start_ts,
+        expiry_end=expiry_end_ts,
+    )
+    net_juice_total = _net_juice_for_base_legs(
+        account,
+        marked_leg_ids,
+        base_position_ids=base_position_ids,
+        ticker=ticker,
+        expiry_start=expiry_start_ts,
+        expiry_end=expiry_end_ts,
+    )
     current_intrinsic = pm.current_base_intrinsic or 0.0
     intrinsic_gap = max(0.0, (initial_intrinsic or 0.0) - (current_intrinsic + (protection or 0.0)))
-    income_total_realized = _income_after_base_protection(original_base_value, current_base_value, protection, raw_income)
+    rebalance = _rebalance_extrinsic_to_protection(initial_extrinsic, net_juice_total, intrinsic_gap)
+    protection_effective = (protection or 0.0) + rebalance
+    income_adjusted = float(raw_income) - rebalance
+    denom_intrinsic = initial_intrinsic or original_base_value
+    base_strength_ratio = _safe_ratio((current_base_value or 0) + protection_effective, denom_intrinsic)
+    base_growth_pct = None
+    if denom_intrinsic:
+        base_growth_pct = _safe_ratio((current_base_value or 0) - denom_intrinsic, denom_intrinsic)
+    gap, applied, income_after, juice_needed = _protection_allocation(denom_intrinsic, current_base_value, protection_effective, income_adjusted)
+    intrinsic_gap = max(0.0, (initial_intrinsic or 0.0) - (current_intrinsic + protection_effective))
+    income_total_realized = _income_after_base_protection(original_base_value, current_base_value, protection_effective, income_adjusted)
     income_efficiency = _safe_ratio(income_total_realized, denom_intrinsic)
     income_series = _income_series_by_week(account, symbol=ticker, base_position_id=pm.position.position_id)
     base_strength_series = _base_strength_series_placeholder(_clean_number(base_strength_ratio))
     base_value_series = _base_value_series_placeholder(_clean_number(current_base_value))
-    base_plus_protection = ((pm.current_base_intrinsic or 0.0) + (protection or 0.0))
+    base_plus_protection = ((pm.current_base_intrinsic or 0.0) + protection_effective)
 
     return StockDetail(
         ticker=ticker,
@@ -1366,9 +1518,9 @@ def stock_detail(
         initial_base_extrinsic=_clean_number(total_initial_base_extrinsic),
         current_base_intrinsic=_clean_number(total_current_base_intrinsic),
         base_plus_protection=_clean_number(base_plus_protection),
-        total_protection_collected=_clean_number(protection),
+        total_protection_collected=_clean_number(protection_effective),
         protection_gap=_clean_number(intrinsic_gap),
-        net_juice_total=_clean_number(raw_income),
+        net_juice_total=_clean_number(net_juice_total),
         short_extrinsic_net=_clean_number(total_short_extrinsic_net),
         long_extrinsic_loan=_clean_number(total_long_extrinsic_loan),
         long_extrinsic_paid=_clean_number(total_long_extrinsic_paid),

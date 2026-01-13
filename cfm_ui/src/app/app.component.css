@@ -169,6 +169,66 @@ header p {
   background: rgba(245, 158, 11, 0.12);
 }
 
+.status-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+
+.status-icon svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
+.status-icon.ok {
+  color: #22c55e;
+}
+
+.status-icon.bad {
+  color: #ef4444;
+}
+
+.overall-dot {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  vertical-align: middle;
+}
+
+.overall-dot.green {
+  background: #22c55e;
+}
+
+.overall-dot.yellow {
+  background: #f59e0b;
+}
+
+.overall-dot.red {
+  background: #ef4444;
+}
+
+.money-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-left: 6px;
+  border-radius: 999px;
+  border: 1px solid #22c55e;
+  color: #22c55e;
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .dialog-backdrop {
   position: fixed;
   inset: 0;

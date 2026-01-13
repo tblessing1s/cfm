@@ -240,24 +240,58 @@
             <thead class="text-xs uppercase tracking-wider text-muted">
               <tr>
                 <th>Ticker</th>
-                <th>Base strength</th>
-                <th>Base growth</th>
-                <th>Base + Short Intrinsic</th>
-                <th>Prot. gap</th>
-                <th>Current base</th>
+                <th>Overall</th>
+                <th>Protected</th>
+                <th>Paid off</th>
+                <th>Income generating</th>
               </tr>
             </thead>
             <tbody>
               <tr *ngFor="let row of stockRows" (click)="selectStock(row.ticker)" class="cursor-pointer hover:bg-surface">
                 <td class="font-semibold">{{ row.ticker }}</td>
-                <td>{{ row.base_strength_ratio || 0 | number:'1.2-2' }}</td>
-                <td>{{ row.base_growth_pct || 0 | percent:'1.1-1' }}</td>
-                <td>{{ ((row.current_base_value || 0) + (row.total_protection_collected || 0)) | number:'1.0-0' }}</td>
-                <td>{{ row.protection_gap || 0 | number:'1.2-2' }}</td>
-                <td>{{ row.current_base_value || 0 | number:'1.0-0' }}</td>
+                <td>
+                  <span class="overall-dot"
+                        [class.green]="overallStatus(row) === 'green'"
+                        [class.yellow]="overallStatus(row) === 'yellow'"
+                        [class.red]="overallStatus(row) === 'red'"></span>
+                  <span *ngIf="isIncomeGenerating(row)" class="money-icon" title="Generating income">$</span>
+                </td>
+                <td>
+                  <span class="status-icon" [class.ok]="isProtected(row)" [class.bad]="!isProtected(row)">
+                    <svg *ngIf="isProtected(row)" viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M9.2 16.2 5.5 12.5l1.4-1.4 2.3 2.3 7-7 1.4 1.4z" />
+                    </svg>
+                    <svg *ngIf="!isProtected(row)" viewBox="0 0 24 24" aria-hidden="true">
+                      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" />
+                      <path d="M8 12h8" stroke="currentColor" stroke-width="2" />
+                    </svg>
+                  </span>
+                </td>
+                <td>
+                  <span class="status-icon" [class.ok]="isPaidOff(row)" [class.bad]="!isPaidOff(row)">
+                    <svg *ngIf="isPaidOff(row)" viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M9.2 16.2 5.5 12.5l1.4-1.4 2.3 2.3 7-7 1.4 1.4z" />
+                    </svg>
+                    <svg *ngIf="!isPaidOff(row)" viewBox="0 0 24 24" aria-hidden="true">
+                      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" />
+                      <path d="M8 12h8" stroke="currentColor" stroke-width="2" />
+                    </svg>
+                  </span>
+                </td>
+                <td>
+                  <span class="status-icon" [class.ok]="isIncomeGenerating(row)" [class.bad]="!isIncomeGenerating(row)">
+                    <svg *ngIf="isIncomeGenerating(row)" viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M9.2 16.2 5.5 12.5l1.4-1.4 2.3 2.3 7-7 1.4 1.4z" />
+                    </svg>
+                    <svg *ngIf="!isIncomeGenerating(row)" viewBox="0 0 24 24" aria-hidden="true">
+                      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" />
+                      <path d="M8 12h8" stroke="currentColor" stroke-width="2" />
+                    </svg>
+                  </span>
+                </td>
               </tr>
               <tr *ngIf="!stockRows.length">
-                <td colspan="6" class="text-center text-muted py-3">No stocks yet.</td>
+                <td colspan="5" class="text-center text-muted py-3">No stocks yet.</td>
               </tr>
             </tbody>
           </table>
@@ -333,61 +367,13 @@
             </div>
             <div class="metric-card">
               <div class="metric-label">Base + Short Intrinsic</div>
-              <div class="metric-value">{{ stockDetail?.base_plus_protection || 0 | number:'1.2-2' }}</div>
+              <div class="metric-value">{{ stockDetailBasePlusProtectionDisplay() | number:'1.2-2' }}</div>
               <div class="metric-help">
                 Base {{ stockDetail?.current_base_intrinsic || 0 | number:'1.2-2' }} · Short intrinsic
                 {{ stockDetail?.total_protection_collected || 0 | number:'1.2-2' }}
-              </div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-label">Base strength</div>
-              <div class="metric-value">
-                {{
-                  baseStrengthStatus(
-                    (stockDetail?.initial_base_extrinsic || 0) - (stockDetail?.net_juice_total || 0),
-                    stockDetail?.protection_gap || 0
-                  )
-                }}
-              </div>
-              <div class="metric-sub">
-                Extrinsic remaining
-                {{
-                  ((stockDetail?.initial_base_extrinsic || 0) - (stockDetail?.net_juice_total || 0)) | number:'1.2-2'
-                }}
-                · Gap {{ stockDetail?.protection_gap || 0 | number:'1.2-2' }}
-              </div>
-              <div class="metric-help">
-                {{
-                  baseStrengthGuidance(
-                    (stockDetail?.initial_base_extrinsic || 0) - (stockDetail?.net_juice_total || 0),
-                    stockDetail?.protection_gap || 0
-                  )
-                }}
-              </div>
-            </div>
-          </div>
-            <div class="trades-panel">
-              <h3>Positions</h3>
-              <div *ngIf="!stockDetail?.positions?.length" class="state small">No positions logged.</div>
-              <div class="cards-grid" *ngIf="stockDetail?.positions?.length">
-                <div class="position-card" *ngFor="let pm of stockDetail?.positions">
-                  <div class="card-head">
-                    <div>
-                      <div class="ticker">{{ pm.position.symbol }}</div>
-                      <div class="meta">{{ pm.position.strategy }} · {{ pm.position.base_type }}</div>
-                    </div>
-                    <div class="ratio">
-                      Base+Prot {{ pm.replacement_ratio || 0 | number:'1.2-2' }}
-                  </div>
-                </div>
-                <div class="metric-row">
-                  <span>Base value</span>
-                  <strong>{{ pm.base_value || 0 | number:'1.2-2' }}</strong>
-                </div>
-                <div class="metric-row">
-                  <span>Short intrinsic protection</span>
-                  <strong>{{ pm.net_intrinsic_to_date || 0 | number:'1.2-2' }}</strong>
-                </div>
+                <ng-container *ngIf="stockDetailExtrinsicRebalance() > 0">
+                  + Short extrinsic {{ stockDetailExtrinsicRebalance() | number:'1.2-2' }}
+                </ng-container>
               </div>
             </div>
           </div>

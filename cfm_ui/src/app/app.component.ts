@@ -135,6 +135,7 @@ export class AppComponent implements OnInit {
   // Single display mode: always show totals and /100 for premium/juice/protection
   displayMode: 'all_contracts_per100' = 'all_contracts_per100';
   private readonly contractMultiplier = 100;
+  private readonly statusEps = 0.01;
   loading = true;
   error?: string;
   trades: Trade[] = [];
@@ -366,6 +367,75 @@ export class AppComponent implements OnInit {
         this.stockRows = [];
       },
     });
+  }
+
+  stockNetJuice(row: StockSummaryRow): number {
+    return row.short_extrinsic_net ?? row.income_total_realized ?? 0;
+  }
+
+  stockExtrinsicRebalance(row: StockSummaryRow): number {
+    const initialExtrinsic = row.initial_base_extrinsic ?? 0;
+    const gap = row.protection_gap ?? 0;
+    const excess = this.stockNetJuice(row) - initialExtrinsic;
+    if (excess <= this.statusEps || gap <= this.statusEps) {
+      return 0;
+    }
+    return Math.min(excess, gap);
+  }
+
+  isProtected(row: StockSummaryRow): boolean {
+    const gap = row.protection_gap ?? 0;
+    const adjustedGap = gap - this.stockExtrinsicRebalance(row);
+    return adjustedGap <= this.statusEps;
+  }
+
+  isPaidOff(row: StockSummaryRow): boolean {
+    const initialExtrinsic = row.initial_base_extrinsic ?? 0;
+    const remaining = initialExtrinsic - this.stockNetJuice(row);
+    return remaining <= this.statusEps;
+  }
+
+  isIncomeGenerating(row: StockSummaryRow): boolean {
+    const initialExtrinsic = row.initial_base_extrinsic ?? 0;
+    return this.isProtected(row) && this.isPaidOff(row) && this.stockNetJuice(row) > initialExtrinsic + this.statusEps;
+  }
+
+  overallStatus(row: StockSummaryRow): 'green' | 'yellow' | 'red' {
+    if (!this.isProtected(row)) {
+      return 'red';
+    }
+    if (this.isPaidOff(row)) {
+      return 'green';
+    }
+    return 'yellow';
+  }
+
+  stockDetailExtrinsicRebalance(): number {
+    if (!this.stockDetail) {
+      return 0;
+    }
+    const initialExtrinsic = this.stockDetail.initial_base_extrinsic ?? 0;
+    const netJuice = this.stockDetail.net_juice_total ?? 0;
+    const gap = this.stockDetail.protection_gap ?? 0;
+    const excess = netJuice - initialExtrinsic;
+    if (excess <= this.statusEps || gap <= this.statusEps) {
+      return 0;
+    }
+    return Math.min(excess, gap);
+  }
+
+  stockDetailProtectionDisplay(): number {
+    if (!this.stockDetail) {
+      return 0;
+    }
+    return (this.stockDetail.total_protection_collected ?? 0) + this.stockDetailExtrinsicRebalance();
+  }
+
+  stockDetailBasePlusProtectionDisplay(): number {
+    if (!this.stockDetail) {
+      return 0;
+    }
+    return (this.stockDetail.current_base_intrinsic ?? 0) + this.stockDetailProtectionDisplay();
   }
 
   selectStock(ticker: string): void {

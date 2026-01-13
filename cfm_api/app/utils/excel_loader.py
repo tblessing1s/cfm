@@ -499,6 +499,8 @@ def _refresh_alpha_cache(ticker: str, expiry: Any) -> None:
         resp = requests.get(url, params=params, timeout=10)
         resp.raise_for_status()
         payload = resp.json()
+        cache_file = ALPHA_CACHE_DIR / f"{ticker}_{month_str}.json"
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
         # Intraday payload key contains interval
         series = None
         for key in payload.keys():
@@ -507,16 +509,20 @@ def _refresh_alpha_cache(ticker: str, expiry: Any) -> None:
                 break
         if series is None:
             series = {}
-        if not series:
-            raise RuntimeError("Alpha Vantage returned no data")
         # Filter to target month; intraday timestamps include time portion.
         # If the month is missing, cache the full series so lookups still work.
         filtered = {k: v for k, v in series.items() if str(k).startswith(month_str)}
         if not filtered:
             filtered = series
-        cache_file = ALPHA_CACHE_DIR / f"{ticker}_{month_str}.json"
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(json.dumps(filtered, indent=2), encoding="utf-8")
+        cache_payload = {
+            "__alpha_cache_format__": "raw",
+            "raw": payload,
+            "time_series": filtered,
+        }
+        cache_file.write_text(json.dumps(cache_payload, indent=2), encoding="utf-8")
+        print(f"[alpha] cached response -> {cache_file}")
+        if not series:
+            raise RuntimeError("Alpha Vantage returned no data")
     except requests.RequestException as exc:
         raise RuntimeError(f"Alpha Vantage request failed: {exc}") from exc
     except Exception:
@@ -525,6 +531,17 @@ def _refresh_alpha_cache(ticker: str, expiry: Any) -> None:
 
 def _cached_underlying(ticker: str, expiry: Any, trade_dt: Any = None) -> Any:
     """Attempt to pull the latest underlying from alpha_cache, refreshing if stale."""
+    def _unwrap_alpha_cache_payload(payload: Any) -> Dict[str, Any]:
+        if isinstance(payload, dict):
+            if payload.get("__alpha_cache_format__") == "raw":
+                series = payload.get("time_series")
+                if isinstance(series, dict):
+                    return series
+            for key, value in payload.items():
+                if isinstance(key, str) and key.lower().startswith("time series") and isinstance(value, dict):
+                    return value
+        return payload if isinstance(payload, dict) else {}
+
     ticker = ticker.upper()
     expiry_dt = pd.to_datetime(expiry, errors="coerce")
     trade_ts = pd.to_datetime(trade_dt, errors="coerce") if trade_dt is not None else None
@@ -543,7 +560,10 @@ def _cached_underlying(ticker: str, expiry: Any, trade_dt: Any = None) -> Any:
                 data = json.load(f)
             except Exception:
                 refresh_needed = True
+        data = _unwrap_alpha_cache_payload(data)
     if not isinstance(data, dict):
+        refresh_needed = True
+    if isinstance(data, dict) and not data:
         refresh_needed = True
 
     trade_ts = trade_ts  # keep name stable below
@@ -564,6 +584,7 @@ def _cached_underlying(ticker: str, expiry: Any, trade_dt: Any = None) -> Any:
         if path.exists():
             with path.open("r", encoding="utf-8") as f:
                 data = json.load(f)
+            data = _unwrap_alpha_cache_payload(data)
             if not isinstance(data, dict):
                 refresh_error = RuntimeError(f"Alpha cache malformed for {ticker} {month_str}")
         else:
@@ -579,6 +600,7 @@ def _cached_underlying(ticker: str, expiry: Any, trade_dt: Any = None) -> Any:
                 try:
                     with candidate.open("r", encoding="utf-8") as f:
                         loaded = json.load(f)
+                    loaded = _unwrap_alpha_cache_payload(loaded)
                     if isinstance(loaded, dict) and loaded:
                         fallback = loaded
                         break
@@ -609,6 +631,7 @@ def _cached_underlying(ticker: str, expiry: Any, trade_dt: Any = None) -> Any:
             _refresh_alpha_cache(ticker, expiry_dt)
             with path.open("r", encoding="utf-8") as f:
                 data = json.load(f)
+            data = _unwrap_alpha_cache_payload(data)
             timestamps = sorted(data.keys())
             for ts in reversed(timestamps):
                 ts_dt = pd.to_datetime(ts)
