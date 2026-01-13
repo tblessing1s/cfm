@@ -20,6 +20,7 @@ import {
   RegimeEntry,
   ProtectionMetrics,
   CashMovement,
+  CashAllocation,
 } from './services/dashboard.service';
 import {
   ExpiryMonthGroup,
@@ -210,6 +211,11 @@ export class AppComponent implements OnInit {
   cashMovements: CashMovement[] = [];
   cashMovementWarning?: string;
   cashMovementError?: string;
+  showCashAllocateModal = false;
+  cashAllocateTicker?: string;
+  cashAllocateType: 'extrinsic' | 'protection' = 'extrinsic';
+  cashAllocateAmount?: number;
+  cashAllocations: CashAllocation[] = [];
   selectedPositionId?: string;
   defaultReservePct = 0.05;
   navChartWidth = 360;
@@ -368,6 +374,7 @@ export class AppComponent implements OnInit {
       next: (summary) => {
         this.portfolioSummary = summary;
         this.stockRows = summary.stocks || [];
+        this.loadCashAllocations();
         if (this.selectedStock) {
           const exists = this.stockRows.some((r) => r.ticker === this.selectedStock);
           if (!exists) {
@@ -383,24 +390,57 @@ export class AppComponent implements OnInit {
     });
   }
 
+  loadCashAllocations(): void {
+    if (!this.selectedAccount) {
+      this.cashAllocations = [];
+      return;
+    }
+    this.dashboardService.listCashAllocations(this.selectedAccount).subscribe({
+      next: (rows) => {
+        this.cashAllocations = rows || [];
+      },
+      error: () => {
+        this.cashAllocations = [];
+      },
+    });
+  }
+
   stockNetJuice(row: StockSummaryRow): number {
     return row.short_extrinsic_net ?? row.income_total_realized ?? 0;
   }
 
-  stockExtrinsicRebalance(row: StockSummaryRow): number {
-    const initialExtrinsic = row.initial_base_extrinsic ?? 0;
-    const gap = row.protection_gap ?? 0;
-    const excess = this.stockNetJuice(row) - initialExtrinsic;
-    if (excess <= this.statusEps || gap <= this.statusEps) {
+  stockInitialBaseValue(row: StockSummaryRow): number {
+    if (row.original_base_value !== undefined && row.original_base_value !== null) {
+      return row.original_base_value;
+    }
+    const intrinsic = row.initial_base_intrinsic ?? 0;
+    const extrinsic = row.initial_base_extrinsic ?? 0;
+    return intrinsic + extrinsic;
+  }
+
+  stockExtrinsicEntryTarget(row: StockSummaryRow): number {
+    const goal = this.stockInitialBaseValue(row) * 0.015;
+    return goal * 1.25;
+  }
+
+  stockExtrinsicExitTarget(row: StockSummaryRow): number {
+    const goal = this.stockInitialBaseValue(row) * 0.015;
+    return goal * 0.25;
+  }
+
+  stockWeeklyReturnPct(row: StockSummaryRow): number {
+    const base = this.stockInitialBaseValue(row);
+    if (!base) {
       return 0;
     }
-    return Math.min(excess, gap);
+    const weekly = row.avg_weekly_income ?? row.income_rate_weekly ?? 0;
+    return (weekly / base) * 100;
   }
 
   isProtected(row: StockSummaryRow): boolean {
     const gap = row.protection_gap ?? 0;
-    const adjustedGap = gap - this.stockExtrinsicRebalance(row);
-    return adjustedGap <= this.statusEps;
+    const allocated = this.allocatedForStock(row.ticker, 'protection');
+    return (gap - allocated) <= this.statusEps;
   }
 
   isPaidOff(row: StockSummaryRow): boolean {
@@ -424,32 +464,161 @@ export class AppComponent implements OnInit {
     return 'yellow';
   }
 
-  stockDetailExtrinsicRebalance(): number {
-    if (!this.stockDetail) {
-      return 0;
-    }
-    const initialExtrinsic = this.stockDetail.initial_base_extrinsic ?? 0;
-    const netJuice = this.stockDetail.net_juice_total ?? 0;
-    const gap = this.stockDetail.protection_gap ?? 0;
-    const excess = netJuice - initialExtrinsic;
-    if (excess <= this.statusEps || gap <= this.statusEps) {
-      return 0;
-    }
-    return Math.min(excess, gap);
+
+  portfolioNetJuice(): number {
+    return this.portfolioSummary?.open_mark_net_juice ?? 0;
   }
 
-  stockDetailProtectionDisplay(): number {
-    if (!this.stockDetail) {
-      return 0;
-    }
-    return (this.stockDetail.total_protection_collected ?? 0) + this.stockDetailExtrinsicRebalance();
+  portfolioExtrinsicRemaining(): number {
+    const initialExtrinsic = this.portfolioSummary?.open_mark_initial_extrinsic ?? 0;
+    return initialExtrinsic - this.portfolioNetJuice();
   }
 
-  stockDetailBasePlusProtectionDisplay(): number {
+  portfolioIsProtected(): boolean {
+    const gap = this.portfolioSummary?.open_mark_protection_gap ?? 0;
+    return gap <= this.statusEps;
+  }
+
+  portfolioIsPaidOff(): boolean {
+    return this.portfolioExtrinsicRemaining() <= this.statusEps;
+  }
+
+  portfolioIsIncomeGenerating(): boolean {
+    const initialExtrinsic = this.portfolioSummary?.total_initial_base_extrinsic ?? 0;
+    return this.portfolioIsProtected() && this.portfolioIsPaidOff() && this.portfolioNetJuice() > initialExtrinsic + this.statusEps;
+  }
+
+  portfolioExtraExtrinsic(): number {
+    const initialExtrinsic = this.portfolioSummary?.open_mark_initial_extrinsic ?? 0;
+    const extra = this.portfolioNetJuice() - initialExtrinsic;
+    return extra > this.statusEps ? extra : 0;
+  }
+
+  portfolioExtrinsicAllocation(): number {
+    return Math.max(0, this.portfolioExtrinsicRemaining());
+  }
+
+  portfolioProtectionAllocation(): number {
+    return this.portfolioSummary?.open_mark_protection_gap ?? 0;
+  }
+
+  portfolioReserveCash(): number {
+    const base = this.portfolioSummary?.open_mark_initial_base_value ?? 0;
+    return base * 0.07;
+  }
+
+  portfolioUnusedCash(): number {
+    const totalCash = this.portfolioSummary?.total_cash ?? 0;
+    const allocated = this.portfolioExtrinsicAllocation() + this.portfolioProtectionAllocation() + this.portfolioReserveCash();
+    return Math.max(0, totalCash - allocated - this.allocatedCashTotal());
+  }
+
+  allocatedCashTotal(): number {
+    return this.cashAllocations.reduce((sum, item) => sum + (item.amount || 0), 0);
+  }
+
+  stockExtrinsicGap(row: StockSummaryRow): number {
+    const initialExtrinsic = row.initial_base_extrinsic ?? 0;
+    const gap = initialExtrinsic - this.stockNetJuice(row);
+    return Math.max(0, gap);
+  }
+
+  stockProtectionGap(row: StockSummaryRow): number {
+    return Math.max(0, row.protection_gap ?? 0);
+  }
+
+  selectedAllocationGap(): number {
+    const row = this.stockRows.find((r) => r.ticker === this.cashAllocateTicker);
+    if (!row) {
+      return 0;
+    }
+    return this.cashAllocateType === 'extrinsic' ? this.stockExtrinsicGap(row) : this.stockProtectionGap(row);
+  }
+
+  selectedAllocationMax(): number {
+    return Math.min(this.portfolioUnusedCash(), this.selectedAllocationGap());
+  }
+
+  allocationFor(ticker: string, type: 'extrinsic' | 'protection'): number {
+    return this.cashAllocations.find((item) => item.ticker === ticker && item.type === type)?.amount ?? 0;
+  }
+
+  allocatedForStock(ticker: string, type: 'extrinsic' | 'protection'): number {
+    return this.cashAllocations
+      .filter((item) => item.ticker === ticker && item.type === type)
+      .reduce((sum, item) => sum + (item.amount || 0), 0);
+  }
+
+  stockDetailProtectionAllocation(): number {
     if (!this.stockDetail) {
       return 0;
     }
-    return (this.stockDetail.current_base_intrinsic ?? 0) + this.stockDetailProtectionDisplay();
+    return this.allocatedForStock(this.stockDetail.ticker, 'protection');
+  }
+
+  stockDetailProtectionWithAllocation(): number {
+    if (!this.stockDetail) {
+      return 0;
+    }
+    return (this.stockDetail.total_protection_collected ?? 0) + this.stockDetailProtectionAllocation();
+  }
+
+  stockDetailBasePlusProtectionWithAllocation(): number {
+    if (!this.stockDetail) {
+      return 0;
+    }
+    return (this.stockDetail.current_base_intrinsic ?? 0) + this.stockDetailProtectionWithAllocation();
+  }
+
+  openCashAllocateModal(): void {
+    this.showCashAllocateModal = true;
+    this.cashAllocateTicker = this.stockRows[0]?.ticker;
+    this.cashAllocateType = 'extrinsic';
+    this.cashAllocateAmount = undefined;
+  }
+
+  closeCashAllocateModal(): void {
+    this.showCashAllocateModal = false;
+  }
+
+  updateCashAllocateAmount(value: number | null): void {
+    const max = this.selectedAllocationMax();
+    if (value === null || value === undefined || Number.isNaN(value)) {
+      this.cashAllocateAmount = undefined;
+      return;
+    }
+    this.cashAllocateAmount = Math.max(0, Math.min(value, max));
+  }
+
+  saveCashAllocation(): void {
+    if (!this.cashAllocateTicker) {
+      return;
+    }
+    const max = this.selectedAllocationMax();
+    const amount = Math.max(0, Math.min(this.cashAllocateAmount ?? 0, max));
+    if (!this.selectedAccount) {
+      return;
+    }
+    this.dashboardService
+      .saveCashAllocation({
+        account: this.selectedAccount,
+        ticker: this.cashAllocateTicker,
+        type: this.cashAllocateType,
+        amount,
+      })
+      .subscribe({
+        next: (saved) => {
+          const idx = this.cashAllocations.findIndex(
+            (item) => item.ticker === saved.ticker && item.type === saved.type
+          );
+          if (idx >= 0) {
+            this.cashAllocations[idx] = saved;
+          } else {
+            this.cashAllocations.push(saved);
+          }
+          this.closeCashAllocateModal();
+        },
+      });
   }
 
   selectStock(ticker: string): void {

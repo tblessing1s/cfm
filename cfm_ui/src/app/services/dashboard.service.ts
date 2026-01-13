@@ -185,6 +185,7 @@ export interface StockSummaryRow {
   juice_needed_for_protection?: number;
   income_rate_weekly?: number;
   income_rate_monthly?: number;
+  avg_weekly_income?: number;
   income_efficiency?: number;
   income_consistency_pct?: number;
   short_extrinsic_net?: number;
@@ -218,7 +219,22 @@ export interface PortfolioSummary {
   total_long_extrinsic_paid?: number;
   total_long_extrinsic_remaining?: number;
   total_long_extrinsic_income?: number;
+  open_mark_initial_base_value?: number;
+  open_mark_initial_intrinsic?: number;
+  open_mark_initial_extrinsic?: number;
+  open_mark_current_base_intrinsic?: number;
+  open_mark_protection_collected?: number;
+  open_mark_protection_gap?: number;
+  open_mark_net_juice?: number;
   stocks: StockSummaryRow[];
+}
+
+export interface CashAllocation {
+  account: string;
+  ticker: string;
+  type: 'extrinsic' | 'protection';
+  amount: number;
+  updated_at?: string;
 }
 
 export interface StockDetail {
@@ -466,6 +482,14 @@ export class DashboardService {
     if (expiryStart) params = params.set('expiry_start', expiryStart);
     if (expiryEnd) params = params.set('expiry_end', expiryEnd);
     return this.http.get<ProtectionMetrics>(`${this.baseUrl}/protection-metrics`, { params });
+  }
+
+  listCashAllocations(account?: string): Observable<CashAllocation[]> {
+    return this.http.get<CashAllocation[]>(`${this.baseUrl}/cash-allocations`, this._buildRequestOptions(account));
+  }
+
+  saveCashAllocation(payload: CashAllocation): Observable<CashAllocation> {
+    return this.http.post<CashAllocation>(`${this.baseUrl}/cash-allocations`, payload);
   }
 
   // CRUD helpers

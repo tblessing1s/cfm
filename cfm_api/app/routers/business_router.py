@@ -19,6 +19,7 @@ from ..models.business import (
     RegimeEntry,
     ProtectionMetrics,
     CashMovement,
+    CashAllocation,
 )
 from ..services import business_metrics
 from ..utils import business_loader
@@ -174,6 +175,20 @@ async def list_cash_movements(
 async def create_cash_movement(payload: CashMovement) -> CashMovement:
     created = business_loader.add_cash_movement(payload.model_dump())
     return CashMovement(**created)
+
+
+@router.get("/cash-allocations", response_model=List[CashAllocation])
+async def list_cash_allocations(
+    account: str | None = Query(None, description="Account name or label"),
+) -> List[CashAllocation]:
+    df = business_loader.list_cash_allocations(account)
+    return [CashAllocation(**record) for record in df.to_dict("records")]
+
+
+@router.post("/cash-allocations", response_model=CashAllocation, status_code=201)
+async def upsert_cash_allocation(payload: CashAllocation) -> CashAllocation:
+    created = business_loader.upsert_cash_allocation(payload.model_dump())
+    return CashAllocation(**created)
 
 
 @router.get("/base-legs", response_model=List[BaseLeg])

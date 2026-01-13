@@ -1252,6 +1252,105 @@ def _stock_income_consistency(account: Optional[str], ticker: str) -> float:
     return pct
 
 
+def _average_weekly_income(
+    account: Optional[str],
+    symbol: str,
+    base_position_id: Optional[str] = None,
+    lookback_weeks: int = 13,
+) -> float:
+    series = _income_series_by_week(account, symbol=symbol, base_position_id=base_position_id)
+    if not series:
+        return 0.0
+    cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(weeks=lookback_weeks)
+    values = [
+        point.value
+        for point in series
+        if pd.Timestamp(point.period_start) >= cutoff
+    ]
+    if not values:
+        return 0.0
+    return float(np.mean(values))
+
+
+def _open_marked_portfolio_totals(
+    account: Optional[str],
+    include_closed: bool = False,
+    expiry_start: Optional[str] = None,
+    expiry_end: Optional[str] = None,
+) -> Dict[str, float]:
+    positions_df = business_loader.list_positions(account)
+    expiry_start_ts = _normalize_expiry(expiry_start)
+    expiry_end_ts = _normalize_expiry(expiry_end)
+    total_initial_intrinsic = 0.0
+    total_initial_extrinsic = 0.0
+    total_current_intrinsic = 0.0
+    open_leg_ids: List[str] = []
+
+    for _, pos in positions_df.iterrows():
+        if (not include_closed) and (not pd.isna(pos.get("closed_date"))):
+            continue
+        pid = pos["position_id"]
+        legs = business_loader.list_base_legs(pid)
+        if legs.empty:
+            continue
+        open_ids = _open_base_leg_ids(legs)
+        if not open_ids:
+            continue
+        open_leg_ids.extend(open_ids)
+        open_legs = legs[legs["base_leg_id"].astype(str).isin(open_ids)]
+        if open_legs.empty:
+            continue
+        initial_intrinsic, initial_extrinsic = _initial_base_intrinsic_extrinsic_from_legs(
+            open_legs,
+            expiry_start=expiry_start_ts,
+            expiry_end=expiry_end_ts,
+        )
+        current_intrinsic = _current_base_intrinsic_from_legs(
+            open_legs,
+            expiry_start=expiry_start_ts,
+            expiry_end=expiry_end_ts,
+        )
+        total_initial_intrinsic += float(initial_intrinsic or 0.0)
+        total_initial_extrinsic += float(initial_extrinsic or 0.0)
+        total_current_intrinsic += float(current_intrinsic or 0.0)
+
+    open_leg_ids = list(dict.fromkeys(open_leg_ids))
+    if not open_leg_ids:
+        return {
+            "initial_intrinsic": 0.0,
+            "initial_extrinsic": 0.0,
+            "current_intrinsic": 0.0,
+            "protection_collected": 0.0,
+            "protection_gap": 0.0,
+            "net_juice": 0.0,
+        }
+
+    net_juice = _net_juice_for_base_legs(
+        account,
+        open_leg_ids,
+        expiry_start=expiry_start_ts,
+        expiry_end=expiry_end_ts,
+    )
+    protection_collected = _net_protection_for_base_legs(
+        account,
+        open_leg_ids,
+        expiry_start=expiry_start_ts,
+        expiry_end=expiry_end_ts,
+    )
+    protection_gap = max(
+        0.0,
+        total_initial_intrinsic - (total_current_intrinsic + protection_collected),
+    )
+    return {
+        "initial_intrinsic": float(total_initial_intrinsic),
+        "initial_extrinsic": float(total_initial_extrinsic),
+        "current_intrinsic": float(total_current_intrinsic),
+        "protection_collected": float(protection_collected),
+        "protection_gap": float(protection_gap),
+        "net_juice": float(net_juice),
+    }
+
+
 def stock_summary_rows(
     account: Optional[str] = None,
     include_closed: bool = False,
@@ -1306,6 +1405,11 @@ def stock_summary_rows(
             expiry_start=expiry_start_ts,
             expiry_end=expiry_end_ts,
         )
+        avg_weekly_income = _average_weekly_income(
+            account,
+            pm.position.symbol,
+            base_position_id=pm.position.position_id,
+        )
         consistency_pct = _stock_income_consistency(account, pm.position.symbol)
 
         rows.append(
@@ -1327,6 +1431,7 @@ def stock_summary_rows(
                 juice_needed_for_protection=_clean_number(juice_needed),
                 income_rate_weekly=_clean_number(week_income),
                 income_rate_monthly=_clean_number(month_income),
+                avg_weekly_income=_clean_number(avg_weekly_income),
                 income_efficiency=_clean_number(income_efficiency),
                 income_consistency_pct=_clean_number(consistency_pct),
                 short_extrinsic_net=_clean_number(pm.short_extrinsic_net),
@@ -1381,6 +1486,8 @@ def portfolio_summary(
     total_long_extrinsic_paid = sum((r.long_extrinsic_paid or 0.0) for r in rows)
     total_long_extrinsic_remaining = sum((r.long_extrinsic_remaining or 0.0) for r in rows)
     total_long_extrinsic_income = sum((r.long_extrinsic_income or 0.0) for r in rows)
+    open_mark = _open_marked_portfolio_totals(account, include_closed, expiry_start, expiry_end)
+    open_mark_initial_base_value = open_mark["initial_intrinsic"] + open_mark["initial_extrinsic"]
 
     # Weighted averages for base strength/growth (weight by original base)
     total_original = total_initial_base_intrinsic or sum((r.original_base_value or 0.0) for r in rows)
@@ -1413,6 +1520,13 @@ def portfolio_summary(
         total_long_extrinsic_paid=_clean_number(total_long_extrinsic_paid),
         total_long_extrinsic_remaining=_clean_number(total_long_extrinsic_remaining),
         total_long_extrinsic_income=_clean_number(total_long_extrinsic_income),
+        open_mark_initial_base_value=_clean_number(open_mark_initial_base_value),
+        open_mark_initial_intrinsic=_clean_number(open_mark["initial_intrinsic"]),
+        open_mark_initial_extrinsic=_clean_number(open_mark["initial_extrinsic"]),
+        open_mark_current_base_intrinsic=_clean_number(open_mark["current_intrinsic"]),
+        open_mark_protection_collected=_clean_number(open_mark["protection_collected"]),
+        open_mark_protection_gap=_clean_number(open_mark["protection_gap"]),
+        open_mark_net_juice=_clean_number(open_mark["net_juice"]),
         stocks=rows,
     )
 
@@ -1488,9 +1602,8 @@ def stock_detail(
     )
     current_intrinsic = pm.current_base_intrinsic or 0.0
     intrinsic_gap = max(0.0, (initial_intrinsic or 0.0) - (current_intrinsic + (protection or 0.0)))
-    rebalance = _rebalance_extrinsic_to_protection(initial_extrinsic, net_juice_total, intrinsic_gap)
-    protection_effective = (protection or 0.0) + rebalance
-    income_adjusted = float(raw_income) - rebalance
+    protection_effective = protection or 0.0
+    income_adjusted = float(raw_income)
     denom_intrinsic = initial_intrinsic or original_base_value
     base_strength_ratio = _safe_ratio((current_base_value or 0) + protection_effective, denom_intrinsic)
     base_growth_pct = None

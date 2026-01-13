@@ -159,6 +159,7 @@ class StockSummaryRow(BaseModel):
     juice_needed_for_protection: Optional[float] = None
     income_rate_weekly: Optional[float] = None
     income_rate_monthly: Optional[float] = None
+    avg_weekly_income: Optional[float] = None
     income_efficiency: Optional[float] = None
     income_consistency_pct: Optional[float] = None
     short_extrinsic_net: Optional[float] = None
@@ -229,6 +230,13 @@ class PortfolioSummary(BaseModel):
     total_long_extrinsic_paid: Optional[float] = None
     total_long_extrinsic_remaining: Optional[float] = None
     total_long_extrinsic_income: Optional[float] = None
+    open_mark_initial_base_value: Optional[float] = None
+    open_mark_initial_intrinsic: Optional[float] = None
+    open_mark_initial_extrinsic: Optional[float] = None
+    open_mark_current_base_intrinsic: Optional[float] = None
+    open_mark_protection_collected: Optional[float] = None
+    open_mark_protection_gap: Optional[float] = None
+    open_mark_net_juice: Optional[float] = None
     stocks: list[StockSummaryRow] = Field(default_factory=list)
 
 
@@ -263,5 +271,13 @@ class CashMovement(BaseModel):
     amount: float
     position_id: Optional[str] = None
     note: Optional[str] = None
+
+
+class CashAllocation(BaseModel):
+    account: str
+    ticker: str
+    type: str
+    amount: float
+    updated_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)

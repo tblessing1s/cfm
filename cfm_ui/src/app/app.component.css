@@ -258,6 +258,64 @@ header p {
 .dialog.green {
   border-color: #22c55e;
 }
+
+.transfer-grid {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) auto minmax(240px, 1.4fr);
+  gap: 1rem;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.transfer-panel {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.transfer-label {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.transfer-amount {
+  font-size: 1.6rem;
+  font-weight: 700;
+}
+
+.transfer-sub {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.transfer-icon {
+  display: grid;
+  place-items: center;
+  width: 60px;
+  height: 60px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(148, 163, 184, 0.1);
+}
+
+.transfer-icon svg {
+  width: 36px;
+  height: 36px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 4;
+  stroke-linecap: square;
+}
+
+@media (max-width: 720px) {
+  .transfer-grid {
+    grid-template-columns: 1fr;
+  }
+  .transfer-icon {
+    width: 48px;
+    height: 48px;
+    margin: 0 auto;
+  }
+}
 .dialog.yellow {
   border-color: #f59e0b;
 }

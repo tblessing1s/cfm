@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import uuid
+from datetime import date, datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -165,6 +166,17 @@ cash_movements_store = CsvStore(
         "amount",
         "position_id",
         "note",
+    ],
+)
+
+cash_allocations_store = CsvStore(
+    DATA_DIR / "cash_allocations.csv",
+    [
+        "account",
+        "ticker",
+        "type",
+        "amount",
+        "updated_at",
     ],
 )
 
@@ -400,6 +412,45 @@ def list_base_legs(position_id: Optional[str] = None) -> pd.DataFrame:
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df["expiry"] = pd.to_datetime(df["expiry"], errors="coerce")
     return df.replace({np.nan: None})
+
+
+def list_cash_allocations(account: Optional[str] = None) -> pd.DataFrame:
+    df = cash_allocations_store.load()
+    if df.empty:
+        return df
+    if account:
+        df = df[df["account"] == account]
+    return df.replace({np.nan: None})
+
+
+def upsert_cash_allocation(payload: Dict[str, Any]) -> Dict[str, Any]:
+    account = payload.get("account")
+    ticker = (payload.get("ticker") or "").upper()
+    alloc_type = payload.get("type")
+    amount = payload.get("amount")
+    if not account or not ticker or not alloc_type:
+        raise ValueError("Account, ticker, and type are required for cash allocation")
+
+    row = {
+        "account": account,
+        "ticker": ticker,
+        "type": alloc_type,
+        "amount": amount,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    df = cash_allocations_store.load()
+    if df.empty:
+        cash_allocations_store.append_rows([row])
+        return row
+    mask = (df["account"] == account) & (df["ticker"].astype(str).str.upper() == ticker) & (df["type"] == alloc_type)
+    if mask.any():
+        df.loc[mask, "amount"] = amount
+        df.loc[mask, "updated_at"] = row["updated_at"]
+        df = df.where(pd.notna(df), None)
+        cash_allocations_store.overwrite(df.to_dict("records"))
+    else:
+        cash_allocations_store.append_rows([row])
+    return row
 
 
 def add_base_leg(payload: Dict[str, Any]) -> Dict[str, Any]:
