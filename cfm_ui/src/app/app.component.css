@@ -229,6 +229,41 @@ header p {
   line-height: 1;
 }
 
+.breaker-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+}
+
+.breaker-pill.none {
+  color: var(--text-muted);
+  border-color: var(--border);
+}
+
+.breaker-pill.soft {
+  color: #a16207;
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.45);
+}
+
+.breaker-pill.hard {
+  color: #b91c1c;
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.45);
+}
+
+.breaker-pill.emergency {
+  color: #7c2d12;
+  background: rgba(234, 88, 12, 0.14);
+  border-color: rgba(234, 88, 12, 0.5);
+}
+
 .dialog-backdrop {
   position: fixed;
   inset: 0;

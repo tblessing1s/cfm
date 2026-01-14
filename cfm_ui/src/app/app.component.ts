@@ -464,6 +464,56 @@ export class AppComponent implements OnInit {
     return 'yellow';
   }
 
+  breakerState(row: StockSummaryRow): string {
+    return (row.breaker_state || 'NONE').toUpperCase();
+  }
+
+  breakerPillClass(row: StockSummaryRow): string {
+    const state = this.breakerState(row);
+    if (state === 'EMERGENCY') return 'emergency';
+    if (state === 'HARD') return 'hard';
+    if (state === 'SOFT') return 'soft';
+    return 'none';
+  }
+
+  breakerReasons(row: StockSummaryRow): string {
+    const reasons = row.breaker_reasons || [];
+    return reasons.length ? reasons.join(', ') : '—';
+  }
+
+  breakerAction(row: StockSummaryRow): string {
+    return (row.breaker_action || 'HOLD').toUpperCase();
+  }
+
+  breakerCountdown(row: StockSummaryRow): string {
+    return row.breaker_countdown || '—';
+  }
+
+  stockDetailBreakerState(): string {
+    return (this.stockDetail?.breaker_state || 'NONE').toUpperCase();
+  }
+
+  stockDetailBreakerPillClass(): string {
+    const state = this.stockDetailBreakerState();
+    if (state === 'EMERGENCY') return 'emergency';
+    if (state === 'HARD') return 'hard';
+    if (state === 'SOFT') return 'soft';
+    return 'none';
+  }
+
+  stockDetailBreakerReasons(): string {
+    const reasons = this.stockDetail?.breaker_reasons || [];
+    return reasons.length ? reasons.join(', ') : '—';
+  }
+
+  stockDetailBreakerAction(): string {
+    return (this.stockDetail?.breaker_action || 'HOLD').toUpperCase();
+  }
+
+  stockDetailBreakerCountdown(): string {
+    return this.stockDetail?.breaker_countdown || '—';
+  }
+
 
   portfolioNetJuice(): number {
     return this.portfolioSummary?.open_mark_net_juice ?? 0;

@@ -180,6 +180,28 @@ cash_allocations_store = CsvStore(
     ],
 )
 
+circuit_breaker_store = CsvStore(
+    DATA_DIR / "circuit_breaker_log.csv",
+    [
+        "date",
+        "symbol",
+        "market_regime",
+        "stock_regime",
+        "index_close",
+        "index_ema21",
+        "index_sma50",
+        "index_ema8",
+        "stock_close",
+        "stock_ema21",
+        "stock_sma50",
+        "stock_ema8",
+        "stock_sma200",
+        "cushion_pct",
+        "catastrophic_event",
+        "earnings_days",
+    ],
+)
+
 # Run a one-time migration on import to move any remaining CSVs in the root to data
 def _migrate_legacy_csvs() -> None:
     if not JOURNAL_ROOT.exists():
@@ -219,6 +241,40 @@ def add_regime(payload: Dict[str, Any]) -> Dict[str, Any]:
         "market_condition": payload.get("market_condition"),
     }
     regime_store.append_rows([row])
+    return row
+
+
+def list_circuit_breakers(symbol: Optional[str] = None) -> pd.DataFrame:
+    df = circuit_breaker_store.load()
+    if df.empty:
+        return df
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    if symbol:
+        df["symbol"] = df["symbol"].astype(str).str.upper()
+        df = df[df["symbol"] == symbol.upper()]
+    return df
+
+
+def add_circuit_breaker(payload: Dict[str, Any]) -> Dict[str, Any]:
+    row = {
+        "date": payload.get("date"),
+        "symbol": (payload.get("symbol") or "").upper(),
+        "market_regime": payload.get("market_regime"),
+        "stock_regime": payload.get("stock_regime"),
+        "index_close": payload.get("index_close"),
+        "index_ema21": payload.get("index_ema21"),
+        "index_sma50": payload.get("index_sma50"),
+        "index_ema8": payload.get("index_ema8"),
+        "stock_close": payload.get("stock_close"),
+        "stock_ema21": payload.get("stock_ema21"),
+        "stock_sma50": payload.get("stock_sma50"),
+        "stock_ema8": payload.get("stock_ema8"),
+        "stock_sma200": payload.get("stock_sma200"),
+        "cushion_pct": payload.get("cushion_pct"),
+        "catastrophic_event": payload.get("catastrophic_event"),
+        "earnings_days": payload.get("earnings_days"),
+    }
+    circuit_breaker_store.append_rows([row])
     return row
 
 

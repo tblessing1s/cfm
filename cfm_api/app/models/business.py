@@ -170,6 +170,10 @@ class StockSummaryRow(BaseModel):
     contribution_income_pct: Optional[float] = None
     contribution_protection_pct: Optional[float] = None
     contribution_growth_pct: Optional[float] = None
+    breaker_state: Optional[str] = None
+    breaker_reasons: List[str] = Field(default_factory=list)
+    breaker_action: Optional[str] = None
+    breaker_countdown: Optional[str] = None
 
 
 class StockDetail(BaseModel):
@@ -198,6 +202,10 @@ class StockDetail(BaseModel):
     base_value_series_weekly: list[PillarSeriesPoint] = Field(default_factory=list)
     positions: list[PositionMetrics] = Field(default_factory=list)
     short_leg_matches: list["ShortLegMatch"] = Field(default_factory=list)
+    breaker_state: Optional[str] = None
+    breaker_reasons: List[str] = Field(default_factory=list)
+    breaker_action: Optional[str] = None
+    breaker_countdown: Optional[str] = None
 
 
 class ShortLegMatch(BaseModel):

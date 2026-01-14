@@ -196,6 +196,10 @@ export interface StockSummaryRow {
   contribution_income_pct?: number;
   contribution_protection_pct?: number;
   contribution_growth_pct?: number;
+  breaker_state?: string;
+  breaker_reasons?: string[];
+  breaker_action?: string;
+  breaker_countdown?: string;
 }
 
 export interface PortfolioSummary {
@@ -262,6 +266,10 @@ export interface StockDetail {
   base_strength_series_weekly: PillarSeriesPoint[];
   base_value_series_weekly: PillarSeriesPoint[];
   positions: PositionMetrics[];
+  breaker_state?: string;
+  breaker_reasons?: string[];
+  breaker_action?: string;
+  breaker_countdown?: string;
 }
 
 export interface RegimeEntry {

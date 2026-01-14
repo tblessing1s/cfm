@@ -47,6 +47,369 @@ def _week_start(date_val: pd.Timestamp) -> pd.Timestamp:
     return date_val - pd.to_timedelta(date_val.weekday(), unit="D")
 
 
+def _normalize_condition(value: Optional[str]) -> str:
+    if value is None:
+        return ""
+    normalized = str(value).strip().upper()
+    return normalized
+
+
+def _to_float_or_none(value: object) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if np.isnan(parsed):
+        return None
+    return parsed
+
+
+def _to_bool(value: object) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    return text in {"1", "true", "yes", "y", "t"}
+
+
+def _latest_regime_entry(regimes: pd.DataFrame, symbol: Optional[str]) -> Dict:
+    if regimes.empty:
+        return {}
+    df = regimes.copy()
+    df["symbol_norm"] = df.get("symbol", "").fillna("").astype(str).str.upper()
+    key = (symbol or "").strip().upper()
+    df = df[df["symbol_norm"] == key]
+    if df.empty:
+        return {}
+    if "date" in df.columns:
+        df = df.sort_values("date")
+    latest = df.iloc[-1]
+    return latest.to_dict()
+
+
+def _regime_condition_series(
+    regimes: pd.DataFrame,
+    symbol: Optional[str],
+    field: str,
+    limit: int,
+) -> List[str]:
+    if regimes.empty or field not in regimes.columns:
+        return []
+    df = regimes.copy()
+    df["symbol_norm"] = df.get("symbol", "").fillna("").astype(str).str.upper()
+    key = (symbol or "").strip().upper()
+    df = df[df["symbol_norm"] == key]
+    if df.empty:
+        return []
+    if "date" in df.columns:
+        df = df.sort_values("date", ascending=False)
+    series = df[field].dropna().astype(str).str.upper().tolist()
+    return series[:limit]
+
+
+def _count_consecutive_true(flags: List[bool]) -> int:
+    count = 0
+    for flag in flags:
+        if not flag:
+            break
+        count += 1
+    return count
+
+
+def _latest_circuit_entry(entries: pd.DataFrame, symbol: Optional[str]) -> Dict:
+    if entries.empty:
+        return {}
+    df = entries.copy()
+    df["symbol_norm"] = df.get("symbol", "").fillna("").astype(str).str.upper()
+    key = (symbol or "").strip().upper()
+    df = df[df["symbol_norm"] == key]
+    if df.empty:
+        return {}
+    if "date" in df.columns:
+        df = df.sort_values("date")
+    latest = df.iloc[-1]
+    return latest.to_dict()
+
+
+def _circuit_series(entries: pd.DataFrame, symbol: Optional[str], limit: int) -> List[Dict]:
+    if entries.empty:
+        return []
+    df = entries.copy()
+    df["symbol_norm"] = df.get("symbol", "").fillna("").astype(str).str.upper()
+    key = (symbol or "").strip().upper()
+    df = df[df["symbol_norm"] == key]
+    if df.empty:
+        return []
+    if "date" in df.columns:
+        df = df.sort_values("date", ascending=False)
+    return [row.to_dict() for _, row in df.head(limit).iterrows()]
+
+
+def _market_breaker_from_entry(entry: Dict) -> Tuple[bool, bool, List[str]]:
+    reasons: List[str] = []
+    market_regime = _normalize_condition(entry.get("market_regime"))
+    index_close = _to_float_or_none(entry.get("index_close"))
+    index_ema21 = _to_float_or_none(entry.get("index_ema21"))
+    index_sma50 = _to_float_or_none(entry.get("index_sma50"))
+    index_ema8 = _to_float_or_none(entry.get("index_ema8"))
+
+    market_soft = False
+    market_hard = False
+
+    if market_regime == "YELLOW":
+        market_soft = True
+        reasons.append("M_YELLOW")
+    if market_regime == "RED":
+        market_hard = True
+        reasons.append("M_RED")
+    if index_close is not None and index_ema21 is not None and index_close < index_ema21:
+        market_soft = True
+        reasons.append("M_<21")
+    if index_close is not None and index_sma50 is not None and index_close < index_sma50:
+        market_hard = True
+        reasons.append("M_<50")
+    if index_ema8 is not None and index_ema21 is not None and index_ema8 < index_ema21:
+        market_hard = True
+        reasons.append("M_8<21")
+
+    return market_soft, market_hard, reasons
+
+
+def _stock_breaker_from_entry(entry: Dict, cushion_min: float) -> Tuple[bool, bool, bool, bool, List[str]]:
+    reasons: List[str] = []
+    stock_regime = _normalize_condition(entry.get("stock_regime"))
+    stock_close = _to_float_or_none(entry.get("stock_close"))
+    stock_ema21 = _to_float_or_none(entry.get("stock_ema21"))
+    stock_sma50 = _to_float_or_none(entry.get("stock_sma50"))
+    stock_ema8 = _to_float_or_none(entry.get("stock_ema8"))
+    stock_sma200 = _to_float_or_none(entry.get("stock_sma200"))
+    cushion_pct = _to_float_or_none(entry.get("cushion_pct"))
+    catastrophic_event = _to_bool(entry.get("catastrophic_event"))
+    earnings_days = _to_float_or_none(entry.get("earnings_days"))
+
+    stock_soft = False
+    stock_hard = False
+    stock_emergency = False
+    earnings_risk = False
+
+    if stock_regime == "YELLOW":
+        stock_soft = True
+        reasons.append("S_YELLOW")
+    if stock_regime == "RED":
+        stock_hard = True
+        reasons.append("S_RED")
+    if stock_close is not None and stock_ema21 is not None and stock_close < stock_ema21:
+        stock_soft = True
+        reasons.append("S_<21")
+    if stock_ema8 is not None and stock_ema21 is not None and stock_ema8 < stock_ema21:
+        stock_hard = True
+        reasons.append("S_8<21")
+    if stock_close is not None and stock_sma50 is not None and stock_close < stock_sma50:
+        stock_hard = True
+        reasons.append("S_<50")
+    if stock_close is not None and stock_sma200 is not None and stock_close < stock_sma200:
+        stock_emergency = True
+        reasons.append("S_<200")
+    if cushion_pct is not None and cushion_pct < cushion_min:
+        stock_soft = True
+        reasons.append("S_CUSHION")
+    if catastrophic_event:
+        stock_emergency = True
+        reasons.append("S_CATA")
+    if earnings_days is not None and earnings_days <= 10:
+        earnings_risk = True
+        reasons.append("EARN_10D")
+
+    return stock_soft, stock_hard, stock_emergency, earnings_risk, reasons
+
+
+def _circuit_breaker_from_regimes(ticker: str, regimes: pd.DataFrame) -> Dict[str, Optional[str] | List[str]]:
+    if regimes.empty:
+        return {
+            "breaker_state": "NONE",
+            "breaker_reasons": [],
+            "breaker_action": "HOLD",
+            "breaker_countdown": None,
+        }
+    market_entry = _latest_regime_entry(regimes, "")
+    stock_entry = _latest_regime_entry(regimes, ticker)
+    market_condition = _normalize_condition(market_entry.get("market_condition"))
+    stock_condition = _normalize_condition(stock_entry.get("stock_condition"))
+
+    market_soft = market_condition == "YELLOW"
+    market_hard = market_condition == "RED"
+    stock_soft = stock_condition == "YELLOW"
+    stock_hard = stock_condition == "RED"
+
+    stock_series = _regime_condition_series(regimes, ticker, "stock_condition", limit=7)
+    hard_flags = [cond == "RED" for cond in stock_series]
+    soft_flags = [cond == "YELLOW" for cond in stock_series]
+    hard_consecutive = _count_consecutive_true(hard_flags)
+    soft_count = sum(soft_flags)
+
+    hard_persist = hard_consecutive >= 2
+    soft_persist = soft_count >= 5
+
+    reasons: List[str] = []
+    if market_hard:
+        reasons.append("M_RED")
+    elif market_soft:
+        reasons.append("M_YELLOW")
+    if stock_hard:
+        reasons.append("S_RED")
+    elif stock_soft:
+        reasons.append("S_YELLOW")
+    if hard_persist:
+        reasons.append("S_HARD_2D")
+    elif soft_persist:
+        reasons.append("S_SOFT_5_OF_7")
+
+    breaker_countdown = None
+    if hard_consecutive == 1:
+        breaker_countdown = "Hard breaker day 1 of 2"
+    elif hard_consecutive >= 2:
+        breaker_countdown = "Hard breaker day 2 of 2"
+
+    if stock_hard or market_hard or hard_persist or soft_persist:
+        breaker_state = "HARD"
+    elif stock_soft or market_soft:
+        breaker_state = "SOFT"
+    else:
+        breaker_state = "NONE"
+
+    if breaker_state == "HARD":
+        breaker_action = "EXIT"
+    elif breaker_state == "SOFT":
+        breaker_action = "DEFEND"
+    else:
+        breaker_action = "GROW" if (market_condition == "GREEN" and stock_condition == "GREEN") else "HOLD"
+
+    return {
+        "breaker_state": breaker_state,
+        "breaker_reasons": reasons,
+        "breaker_action": breaker_action,
+        "breaker_countdown": breaker_countdown,
+    }
+
+
+def _circuit_breaker_from_inputs(
+    ticker: str,
+    inputs: pd.DataFrame,
+    regimes: pd.DataFrame,
+) -> Dict[str, Optional[str] | List[str]]:
+    if inputs.empty:
+        return _circuit_breaker_from_regimes(ticker, regimes)
+
+    market_entry = _latest_circuit_entry(inputs, "")
+    stock_entry = _latest_circuit_entry(inputs, ticker)
+
+    market_soft = False
+    market_hard = False
+    stock_soft = False
+    stock_hard = False
+    stock_emergency = False
+    earnings_risk = False
+    soft_persist = False
+    reasons: List[str] = []
+
+    if market_entry:
+        market_soft, market_hard, market_reasons = _market_breaker_from_entry(market_entry)
+        reasons.extend(market_reasons)
+    else:
+        fallback = _circuit_breaker_from_regimes(ticker, regimes)
+        reasons.extend(fallback["breaker_reasons"])
+        market_soft = "M_YELLOW" in fallback["breaker_reasons"]
+        market_hard = "M_RED" in fallback["breaker_reasons"]
+
+    if stock_entry:
+        stock_soft, stock_hard, stock_emergency, earnings_risk, stock_reasons = _stock_breaker_from_entry(stock_entry, cushion_min=0.03)
+        reasons.extend(stock_reasons)
+    else:
+        fallback = _circuit_breaker_from_regimes(ticker, regimes)
+        reasons.extend([r for r in fallback["breaker_reasons"] if r.startswith("S_")])
+        stock_soft = "S_YELLOW" in fallback["breaker_reasons"]
+        stock_hard = "S_RED" in fallback["breaker_reasons"]
+
+    series = _circuit_series(inputs, ticker, limit=7)
+    hard_flags = []
+    soft_flags = []
+    if series:
+        for row in series:
+            row_soft, row_hard, row_emergency, _, _ = _stock_breaker_from_entry(row, cushion_min=0.03)
+            hard_flags.append(row_hard or row_emergency)
+            soft_flags.append(row_soft)
+    else:
+        regime_series = _regime_condition_series(regimes, ticker, "stock_condition", limit=7)
+        hard_flags = [cond == "RED" for cond in regime_series]
+        soft_flags = [cond == "YELLOW" for cond in regime_series]
+    hard_consecutive = _count_consecutive_true(hard_flags)
+    soft_count = sum(soft_flags)
+
+    hard_persist = hard_consecutive >= 2
+    soft_persist = soft_count >= 5
+
+    if hard_persist:
+        reasons.append("S_HARD_2D")
+    elif soft_persist:
+        reasons.append("S_SOFT_5_OF_7")
+    if earnings_risk and "EARN_10D" not in reasons:
+        reasons.append("EARN_10D")
+
+    breaker_countdown = None
+    if hard_consecutive == 1:
+        breaker_countdown = "Hard breaker day 1 of 2"
+    elif hard_consecutive >= 2:
+        breaker_countdown = "Hard breaker day 2 of 2"
+
+    if stock_emergency:
+        breaker_state = "EMERGENCY"
+    elif stock_hard or market_hard or hard_persist or soft_persist:
+        breaker_state = "HARD"
+    elif stock_soft or market_soft or earnings_risk:
+        breaker_state = "SOFT"
+    else:
+        breaker_state = "NONE"
+
+    market_regime = _normalize_condition(market_entry.get("market_regime")) if market_entry else ""
+    stock_regime = _normalize_condition(stock_entry.get("stock_regime")) if stock_entry else ""
+    index_close = _to_float_or_none(market_entry.get("index_close")) if market_entry else None
+    index_ema21 = _to_float_or_none(market_entry.get("index_ema21")) if market_entry else None
+    stock_close = _to_float_or_none(stock_entry.get("stock_close")) if stock_entry else None
+    stock_ema21 = _to_float_or_none(stock_entry.get("stock_ema21")) if stock_entry else None
+    stock_ema8 = _to_float_or_none(stock_entry.get("stock_ema8")) if stock_entry else None
+
+    grow_ok = (
+        market_regime == "GREEN"
+        and stock_regime == "GREEN"
+        and (index_close is None or index_ema21 is None or index_close >= index_ema21)
+        and (stock_close is None or stock_ema21 is None or stock_close >= stock_ema21)
+        and (stock_ema8 is None or stock_ema21 is None or stock_ema8 >= stock_ema21)
+        and not (market_soft or market_hard or stock_soft or stock_hard or stock_emergency or earnings_risk or hard_persist or soft_persist)
+    )
+    reduce_ok = breaker_state == "SOFT" and (
+        soft_persist or "S_CUSHION" in reasons or market_hard or earnings_risk
+    )
+
+    if breaker_state in {"HARD", "EMERGENCY"}:
+        breaker_action = "EXIT"
+    elif reduce_ok:
+        breaker_action = "REDUCE"
+    elif breaker_state == "SOFT":
+        breaker_action = "DEFEND"
+    else:
+        breaker_action = "GROW" if grow_ok else "HOLD"
+
+    return {
+        "breaker_state": breaker_state,
+        "breaker_reasons": sorted(set(reasons)),
+        "breaker_action": breaker_action,
+        "breaker_countdown": breaker_countdown,
+    }
+
+
 def _ledger_by_expiry(account: Optional[str] = None, ticker: Optional[str] = None, base_position_id: Optional[str] = None) -> pd.DataFrame:
     """Build a DataFrame of ledger rows keyed by expiry for juice aggregation."""
     rows = excel_loader.get_ledger_rows(account)
@@ -1364,6 +1727,8 @@ def stock_summary_rows(
         expiry_start=expiry_start,
         expiry_end=expiry_end,
     )
+    regimes = business_loader.list_regimes()
+    breaker_inputs = business_loader.list_circuit_breakers()
     rows: List[StockSummaryRow] = []
     expiry_start_ts = _normalize_expiry(expiry_start)
     expiry_end_ts = _normalize_expiry(expiry_end)
@@ -1411,6 +1776,7 @@ def stock_summary_rows(
             base_position_id=pm.position.position_id,
         )
         consistency_pct = _stock_income_consistency(account, pm.position.symbol)
+        breaker = _circuit_breaker_from_inputs(pm.position.symbol, breaker_inputs, regimes)
 
         rows.append(
             StockSummaryRow(
@@ -1439,6 +1805,10 @@ def stock_summary_rows(
                 long_extrinsic_paid=_clean_number(pm.long_extrinsic_paid),
                 long_extrinsic_remaining=_clean_number(pm.long_extrinsic_remaining),
                 long_extrinsic_income=_clean_number(pm.long_extrinsic_income),
+                breaker_state=breaker["breaker_state"],
+                breaker_reasons=breaker["breaker_reasons"],
+                breaker_action=breaker["breaker_action"],
+                breaker_countdown=breaker["breaker_countdown"],
             )
         )
 
@@ -1540,6 +1910,8 @@ def stock_detail(
 ) -> StockDetail:
     """Per-stock drillable detail including pillars and series."""
     ticker = ticker.upper()
+    breaker_inputs = business_loader.list_circuit_breakers()
+    regimes = business_loader.list_regimes()
     rows = [
         pm
         for pm in position_metrics(
@@ -1617,6 +1989,7 @@ def stock_detail(
     base_strength_series = _base_strength_series_placeholder(_clean_number(base_strength_ratio))
     base_value_series = _base_value_series_placeholder(_clean_number(current_base_value))
     base_plus_protection = ((pm.current_base_intrinsic or 0.0) + protection_effective)
+    breaker = _circuit_breaker_from_inputs(ticker, breaker_inputs, regimes)
 
     return StockDetail(
         ticker=ticker,
@@ -1643,6 +2016,10 @@ def stock_detail(
         base_strength_series_weekly=base_strength_series,
         base_value_series_weekly=base_value_series,
         positions=rows,
+        breaker_state=breaker["breaker_state"],
+        breaker_reasons=breaker["breaker_reasons"],
+        breaker_action=breaker["breaker_action"],
+        breaker_countdown=breaker["breaker_countdown"],
     )
 
 

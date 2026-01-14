@@ -146,6 +146,10 @@
               <tr>
                 <th>Ticker</th>
                 <th>Overall</th>
+                <th>Breaker</th>
+                <th>Reasons</th>
+                <th>Action</th>
+                <th>Countdown</th>
                 <th>Protected</th>
                 <th>Paid off</th>
                 <th>Income generating</th>
@@ -163,6 +167,12 @@
                         [class.red]="overallStatus(row) === 'red'"></span>
                   <span *ngIf="isIncomeGenerating(row)" class="money-icon" title="Generating income">$</span>
                 </td>
+                <td>
+                  <span class="breaker-pill" [ngClass]="breakerPillClass(row)">{{ breakerState(row) }}</span>
+                </td>
+                <td class="text-xs text-muted">{{ breakerReasons(row) }}</td>
+                <td class="text-xs font-semibold">{{ breakerAction(row) }}</td>
+                <td class="text-xs text-muted">{{ breakerCountdown(row) }}</td>
                 <td>
                   <span class="status-icon" [class.ok]="isProtected(row)" [class.bad]="!isProtected(row)">
                     <svg *ngIf="isProtected(row)" viewBox="0 0 24 24" aria-hidden="true">
@@ -204,7 +214,7 @@
                 <td>{{ stockWeeklyReturnPct(row) | number:'1.2-2' }}%</td>
               </tr>
               <tr *ngIf="!stockRows.length">
-                <td colspan="7" class="text-center text-muted py-3">No stocks yet.</td>
+                <td colspan="11" class="text-center text-muted py-3">No stocks yet.</td>
               </tr>
             </tbody>
           </table>
@@ -288,6 +298,15 @@
                   · Manual protection {{ stockDetailProtectionAllocation() | number:'1.2-2' }}
                 </ng-container>
               </div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Circuit breaker</div>
+              <div class="metric-value">
+                <span class="breaker-pill" [ngClass]="stockDetailBreakerPillClass()">{{ stockDetailBreakerState() }}</span>
+              </div>
+              <div class="metric-sub">Action {{ stockDetailBreakerAction() }}</div>
+              <div class="metric-sub">Reasons {{ stockDetailBreakerReasons() }}</div>
+              <div class="metric-sub">Countdown {{ stockDetailBreakerCountdown() }}</div>
             </div>
           </div>
           </ng-container>
