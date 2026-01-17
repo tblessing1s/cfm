@@ -107,6 +107,20 @@ export interface ReplacementCost {
   method: string;
 }
 
+export interface ShortLegSignal {
+  key: string;
+  strike?: number;
+  expiry?: string;
+  contracts?: number;
+  extrinsic_now?: number;
+  capture_pct?: number;
+  dte?: number;
+  near_atm?: boolean;
+  income_roll: boolean;
+  protection_roll: boolean;
+  emergency: boolean;
+}
+
 export interface PositionMetrics {
   position: BasePosition;
   base_value?: number;
@@ -132,6 +146,27 @@ export interface PositionMetrics {
   scale_capacity_units?: number;
   roll_plan_flag: boolean;
   roll_action_flag: boolean;
+  principal_cost?: number;
+  long_value_now?: number;
+  short_realized_pnl?: number;
+  short_unrealized_pnl?: number;
+  liquidation_value?: number;
+  protected_now?: boolean;
+  cushion?: number;
+  working_juice?: number;
+  locked_juice?: number;
+  weekly_locked_income?: number;
+  avg_defense_debit?: number;
+  debit_cap?: number;
+  open_short_contracts?: number;
+  safety_reserve?: number;
+  withdrawable_now?: number;
+  income_roll: boolean;
+  protection_roll: boolean;
+  emergency_roll: boolean;
+  recommended_action?: string;
+  last10_defense_debits?: number[];
+  open_short_signals?: ShortLegSignal[];
 }
 
 export interface BusinessDashboard {
@@ -255,6 +290,8 @@ export interface StockDetail {
   current_base_intrinsic?: number;
   base_plus_protection?: number;
   total_protection_collected?: number;
+  short_intrinsic_realized?: number;
+  short_intrinsic_unrealized?: number;
   protection_gap?: number;
   net_juice_total?: number;
   short_extrinsic_net?: number;

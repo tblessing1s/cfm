@@ -292,8 +292,9 @@
               <div class="metric-label">Base + Short Intrinsic</div>
               <div class="metric-value">{{ stockDetailBasePlusProtectionWithAllocation() | number:'1.2-2' }}</div>
               <div class="metric-help">
-                Base {{ stockDetail?.current_base_intrinsic || 0 | number:'1.2-2' }} · Short intrinsic
-                {{ stockDetailProtectionWithAllocation() | number:'1.2-2' }}
+                Base {{ stockDetail?.current_base_intrinsic || 0 | number:'1.2-2' }}
+                · Short intrinsic (realized) {{ stockDetailShortIntrinsicRealized() | number:'1.2-2' }}
+                · Short intrinsic (unrealized) {{ stockDetailShortIntrinsicUnrealized() | number:'1.2-2' }}
                 <ng-container *ngIf="stockDetailProtectionAllocation() > 0">
                   · Manual protection {{ stockDetailProtectionAllocation() | number:'1.2-2' }}
                 </ng-container>
@@ -304,7 +305,8 @@
               <div class="metric-value">
                 <span class="breaker-pill" [ngClass]="stockDetailBreakerPillClass()">{{ stockDetailBreakerState() }}</span>
               </div>
-              <div class="metric-sub">Action {{ stockDetailBreakerAction() }}</div>
+              <div class="metric-sub">Breaker {{ stockDetailBreakerStateLabel() }}</div>
+              <div class="metric-sub">Action {{ stockDetailBreakerActionLabel() }}</div>
               <div class="metric-sub">Reasons {{ stockDetailBreakerReasons() }}</div>
               <div class="metric-sub">Countdown {{ stockDetailBreakerCountdown() }}</div>
             </div>
@@ -453,6 +455,33 @@
       </div>
     </section>
 
+    <section class="entry-card" *ngIf="showAdvanced && activeBusinessView === 'snapshot' && positionMetrics.length">
+      <div class="business-panel">
+        <h2>Protection & Withdrawable</h2>
+        <p class="text-muted">Answers: protected principal if flattened, and withdrawable income after defense reserve.</p>
+        <div class="metric-grid">
+          <div class="metric-card">
+            <div class="metric-label">Protected Principal (Flatten Now)</div>
+            <div class="metric-value" [class]="protectionClass(portfolioProtectedNow())">
+              {{ portfolioProtectedNow() ? 'Yes' : 'No' }}
+            </div>
+            <div class="metric-help">
+              Liquidation {{ portfolioLiquidationValue() | number:'1.2-2' }} / C0 {{ portfolioPrincipalCost() | number:'1.2-2' }}
+            </div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Withdrawable Now</div>
+            <div class="metric-value">
+              {{ portfolioWithdrawableNow() | number:'1.2-2' }}
+            </div>
+            <div class="metric-help">
+              Cushion {{ portfolioCushion() | number:'1.2-2' }} - Safety Reserve {{ portfolioSafetyReserve() | number:'1.2-2' }}
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section class="entry-card" *ngIf="showAdvanced && activeBusinessView === 'cashflow'">
       <div class="business-panel">
         <h2>Short Income</h2>
@@ -554,7 +583,65 @@
             <strong>{{ pm.net_juice_to_date || 0 | number:'1.2-2' }}</strong>
           </div>
           <div class="metric-row">
-            <span>Reserve (5% default)</span>
+            <span>Principal (C0)</span>
+            <strong>{{ pm.principal_cost || 0 | number:'1.2-2' }}</strong>
+          </div>
+          <div class="metric-row">
+            <span>Liquidation value</span>
+            <strong>{{ pm.liquidation_value || 0 | number:'1.2-2' }}</strong>
+          </div>
+          <div class="metric-row">
+            <span>Protected now</span>
+            <strong>{{ pm.protected_now ? 'Yes' : 'No' }}</strong>
+          </div>
+          <div class="metric-row">
+            <span>Cushion</span>
+            <strong>{{ pm.cushion || 0 | number:'1.2-2' }}</strong>
+          </div>
+          <div class="metric-row">
+            <span>Short P&L (realized)</span>
+            <strong>{{ pm.short_realized_pnl || 0 | number:'1.2-2' }}</strong>
+          </div>
+          <div class="metric-row">
+            <span>Short P&L (unrealized)</span>
+            <strong>{{ pm.short_unrealized_pnl || 0 | number:'1.2-2' }}</strong>
+          </div>
+          <div class="metric-row">
+            <span>Working juice (open)</span>
+            <strong>{{ pm.working_juice || 0 | number:'1.2-2' }}</strong>
+          </div>
+          <div class="metric-row">
+            <span>Locked juice (closed)</span>
+            <strong>{{ pm.locked_juice || 0 | number:'1.2-2' }}</strong>
+          </div>
+          <div class="metric-row">
+            <span>Weekly locked income</span>
+            <strong>{{ pm.weekly_locked_income || 0 | number:'1.2-2' }}</strong>
+          </div>
+          <div class="metric-row">
+            <span>Safety reserve</span>
+            <strong>{{ pm.safety_reserve || 0 | number:'1.2-2' }}</strong>
+          </div>
+          <div class="metric-row">
+            <span>Withdrawable now</span>
+            <strong>{{ pm.withdrawable_now || 0 | number:'1.2-2' }}</strong>
+          </div>
+          <div class="metric-row" *ngIf="pm.recommended_action">
+            <span>Recommended action</span>
+            <strong>{{ pm.recommended_action }}</strong>
+          </div>
+          <div class="metric-row" *ngIf="pm.open_short_signals?.length">
+            <span>Open shorts</span>
+            <strong>{{ pm.open_short_signals?.length || 0 }}</strong>
+          </div>
+          <div class="metric-sub" *ngFor="let sig of pm.open_short_signals">
+            {{ sig.strike || '-' }} · {{ sig.expiry | date:'yyyy-MM-dd' }} · DTE {{ sig.dte !== undefined && sig.dte !== null ? sig.dte : '-' }}
+            · Capture {{ sig.capture_pct || 0 | percent:'1.0-0' }}
+            · Extrinsic {{ sig.extrinsic_now || 0 | number:'1.2-2' }}
+            · ATM {{ sig.near_atm ? 'Yes' : 'No' }}
+          </div>
+          <div class="metric-row">
+            <span>Reserve (explicit/default)</span>
             <strong>{{ pm.reserve_cash || 0 | number:'1.2-2' }}</strong>
           </div>
           <div class="metric-row">
@@ -1046,18 +1133,19 @@
           </select>
         </label>
 
-        <label>
-          <span>Action</span>
-          <select
-            class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
-            [(ngModel)]="tradeDraft.action"
-            name="entryAction"
-            [disabled]="tradeActionLocked"
-          >
-            <option [ngValue]="'Open'">Open</option>
-            <option [ngValue]="'Close'">Close</option>
-          </select>
-        </label>
+          <label>
+            <span>Action</span>
+            <select
+              class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+              [(ngModel)]="tradeDraft.action"
+              name="entryAction"
+              [disabled]="tradeActionLocked"
+              (ngModelChange)="onTradeActionChange($event)"
+            >
+              <option [ngValue]="'Open'">Open</option>
+              <option [ngValue]="'Close'">Close</option>
+            </select>
+          </label>
 
         <ng-container *ngIf="!tradeStrategyLocked; else lockedStrategy">
           <label>
@@ -1125,17 +1213,19 @@
           </label>
         </ng-template>
 
-        <label>
-          <span>Contracts</span>
-          <input
-            type="number"
-            step="1"
-            min="1"
-            class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
-            [(ngModel)]="tradeDraft.contracts"
-            name="entryContracts"
-          />
-        </label>
+          <label>
+            <span>Contracts</span>
+            <input
+              type="number"
+              step="1"
+              min="1"
+              [attr.max]="tradeContractsMax() ?? null"
+              class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+              [(ngModel)]="tradeDraft.contracts"
+              name="entryContracts"
+              (ngModelChange)="onTradeContractsChange($event)"
+            />
+          </label>
 
         <label>
           <span>Strike</span>

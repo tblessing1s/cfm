@@ -193,11 +193,11 @@ export class AppComponent implements OnInit {
   strategyOptions = ['CFM', 'JL', 'DD', 'OTHER'];
   baseLegDraft: BaseLeg = this.buildBlankBaseLeg();
   baseLegOptions: BaseLeg[] = [];
-  baseLegLookup: Record<string, { open?: BaseLeg; mark?: BaseLeg }> = {};
+  baseLegLookup: Record<string, { open?: BaseLeg; mark?: BaseLeg; net?: number }> = {};
   selectedBaseLegId: string = '';
   baseLegDateTime?: string;
   tradeBaseLegOptions: BaseLeg[] = [];
-  tradeBaseLegLookup: Record<string, { open?: BaseLeg; mark?: BaseLeg }> = {};
+  tradeBaseLegLookup: Record<string, { open?: BaseLeg; mark?: BaseLeg; net?: number }> = {};
   legInstrumentOptions = ['CALL', 'PUT', 'SHARES'];
   legSideOptions = ['BUY', 'SELL'];
   legTagOptions = ['OPEN', 'CLOSE'];
@@ -397,7 +397,7 @@ export class AppComponent implements OnInit {
     }
     this.dashboardService.listCashAllocations(this.selectedAccount).subscribe({
       next: (rows) => {
-        this.cashAllocations = rows || [];
+        this.cashAllocations = this.normalizeProtectionAllocations(rows || []);
       },
       error: () => {
         this.cashAllocations = [];
@@ -489,6 +489,38 @@ export class AppComponent implements OnInit {
     return row.breaker_countdown || '—';
   }
 
+  private breakerStateDescription(state: string): string {
+    switch (state) {
+      case 'EMERGENCY':
+        return 'immediate risk-off, exit now';
+      case 'HARD':
+        return 'risk-off, exit preferred';
+      case 'SOFT':
+        return 'caution mode, protect base and avoid growth';
+      case 'NONE':
+        return 'normal trading conditions';
+      default:
+        return '';
+    }
+  }
+
+  private breakerActionDescription(action: string): string {
+    switch (action) {
+      case 'EXIT':
+        return 'close or hedge out';
+      case 'REDUCE':
+        return 'trim exposure or size down';
+      case 'DEFEND':
+        return 'add protection and avoid new adds';
+      case 'GROW':
+        return 'add exposure if setup is clean';
+      case 'HOLD':
+        return 'no change to exposure';
+      default:
+        return '';
+    }
+  }
+
   stockDetailBreakerState(): string {
     return (this.stockDetail?.breaker_state || 'NONE').toUpperCase();
   }
@@ -508,6 +540,18 @@ export class AppComponent implements OnInit {
 
   stockDetailBreakerAction(): string {
     return (this.stockDetail?.breaker_action || 'HOLD').toUpperCase();
+  }
+
+  stockDetailBreakerStateLabel(): string {
+    const state = this.stockDetailBreakerState();
+    const description = this.breakerStateDescription(state);
+    return description ? `${state} - ${description}` : state;
+  }
+
+  stockDetailBreakerActionLabel(): string {
+    const action = this.stockDetailBreakerAction();
+    const description = this.breakerActionDescription(action);
+    return description ? `${action} - ${description}` : action;
   }
 
   stockDetailBreakerCountdown(): string {
@@ -606,11 +650,31 @@ export class AppComponent implements OnInit {
     return this.allocatedForStock(this.stockDetail.ticker, 'protection');
   }
 
+  stockDetailShortIntrinsicRealized(): number {
+    if (!this.stockDetail) {
+      return 0;
+    }
+    return this.stockDetail.short_intrinsic_realized ?? 0;
+  }
+
+  stockDetailShortIntrinsicUnrealized(): number {
+    if (!this.stockDetail) {
+      return 0;
+    }
+    return this.stockDetail.short_intrinsic_unrealized ?? 0;
+  }
+
   stockDetailProtectionWithAllocation(): number {
     if (!this.stockDetail) {
       return 0;
     }
-    return (this.stockDetail.total_protection_collected ?? 0) + this.stockDetailProtectionAllocation();
+    const realized = this.stockDetail.short_intrinsic_realized;
+    const unrealized = this.stockDetail.short_intrinsic_unrealized;
+    const hasBreakout = realized !== undefined && realized !== null || unrealized !== undefined && unrealized !== null;
+    const baseProtection = hasBreakout
+      ? this.stockDetailShortIntrinsicRealized() + this.stockDetailShortIntrinsicUnrealized()
+      : (this.stockDetail.total_protection_collected ?? 0);
+    return baseProtection + this.stockDetailProtectionAllocation();
   }
 
   stockDetailBasePlusProtectionWithAllocation(): number {
@@ -644,17 +708,20 @@ export class AppComponent implements OnInit {
     if (!this.cashAllocateTicker) {
       return;
     }
+    const gap = this.selectedAllocationGap();
     const max = this.selectedAllocationMax();
     const amount = Math.max(0, Math.min(this.cashAllocateAmount ?? 0, max));
     if (!this.selectedAccount) {
       return;
     }
+    const effectiveAmount =
+      this.cashAllocateType === 'protection' && gap <= this.statusEps ? 0 : amount;
     this.dashboardService
       .saveCashAllocation({
         account: this.selectedAccount,
         ticker: this.cashAllocateTicker,
         type: this.cashAllocateType,
-        amount,
+        amount: effectiveAmount,
       })
       .subscribe({
         next: (saved) => {
@@ -666,9 +733,63 @@ export class AppComponent implements OnInit {
           } else {
             this.cashAllocations.push(saved);
           }
+          if (saved.amount <= 0) {
+            this.cashAllocations = this.cashAllocations.filter(
+              (item) => !(item.ticker === saved.ticker && item.type === saved.type)
+            );
+          }
           this.closeCashAllocateModal();
         },
       });
+  }
+
+  private normalizeProtectionAllocations(rows: CashAllocation[]): CashAllocation[] {
+    if (!rows.length || !this.selectedAccount || !this.stockRows.length) {
+      return rows;
+    }
+    const updates: CashAllocation[] = [];
+    const normalized = rows.map((item) => {
+      if (item.type !== 'protection') {
+        return item;
+      }
+      const row = this.stockRows.find((stock) => stock.ticker === item.ticker);
+      if (!row) {
+        return item;
+      }
+      const gap = this.stockProtectionGap(row);
+      const current = item.amount ?? 0;
+      const clamped = Math.max(0, Math.min(current, gap));
+      if (Math.abs(clamped - current) > this.statusEps) {
+        const updated = { ...item, amount: clamped };
+        updates.push(updated);
+        return updated;
+      }
+      return item;
+    });
+    updates.forEach((item) => {
+      this.dashboardService
+        .saveCashAllocation({
+          account: this.selectedAccount as string,
+          ticker: item.ticker,
+          type: item.type,
+          amount: item.amount ?? 0,
+        })
+        .subscribe({
+          next: (saved) => {
+            const idx = this.cashAllocations.findIndex(
+              (entry) => entry.ticker === saved.ticker && entry.type === saved.type
+            );
+            if (idx >= 0) {
+              if (saved.amount <= 0) {
+                this.cashAllocations.splice(idx, 1);
+              } else {
+                this.cashAllocations[idx] = saved;
+              }
+            }
+          },
+        });
+    });
+    return normalized.filter((item) => item.amount && item.amount > 0);
   }
 
   selectStock(ticker: string): void {
@@ -1089,6 +1210,15 @@ export class AppComponent implements OnInit {
 
     this.enforceSideForStrategy();
 
+    if (this.tradeDraft.action === 'Open') {
+      const maxContracts = this.tradeContractLimit();
+      if (maxContracts !== null && contracts !== undefined && contracts > maxContracts) {
+        this.entryError = `Contracts cannot exceed ${maxContracts} for the selected base leg.`;
+        this.tradeDraft.contracts = maxContracts;
+        return;
+      }
+    }
+
     const staged: LedgerEntryCreate = {
       account,
       // `datetime-local` is a local-time value with no timezone. Sending it as-is
@@ -1424,6 +1554,7 @@ export class AppComponent implements OnInit {
       this.tradeDraft.strategy = '';
       this.tradeDraft.base_leg_id = undefined;
       this.tradeDraft.base_position_id = undefined;
+      this.tradeDraft.contracts = undefined;
       return;
     }
     const entry = this.tradeBaseLegLookup[legId];
@@ -1446,8 +1577,34 @@ export class AppComponent implements OnInit {
     this.tradeActionLocked = false;
     this.tradeStrikeLocked = false;
     this.tradeExpiryLocked = false;
+    this.applyTradeContractLimit(true);
     this.selectedOpenShortKey = undefined;
     this.updateAvailableOpenShorts();
+  }
+
+  onTradeActionChange(action: 'Open' | 'Close'): void {
+    this.tradeDraft.action = action;
+    if (action === 'Open') {
+      this.applyTradeContractLimit(true);
+    }
+  }
+
+  onTradeContractsChange(value: number | string | null): void {
+    const numeric = this.toNumber(value as number | string | undefined);
+    if (numeric === undefined) {
+      this.tradeDraft.contracts = undefined;
+      return;
+    }
+    const maxContracts = this.tradeContractLimit();
+    if (this.tradeDraft.action === 'Open' && maxContracts !== null && numeric > maxContracts) {
+      this.tradeDraft.contracts = maxContracts;
+      return;
+    }
+    this.tradeDraft.contracts = numeric;
+  }
+
+  tradeContractsMax(): number | null {
+    return this.tradeContractLimit();
   }
 
   tradeBaseLegLabel(leg: BaseLeg): string {
@@ -1498,6 +1655,38 @@ export class AppComponent implements OnInit {
     if (value >= 1.1) return 'badge-green';
     if (value >= 1.0) return 'badge-yellow';
     return 'badge-red';
+  }
+
+  protectionClass(value?: boolean | null): string {
+    if (value === undefined || value === null) return 'badge-neutral';
+    return value ? 'badge-green' : 'badge-red';
+  }
+
+  portfolioPrincipalCost(): number {
+    return this.positionMetrics.reduce((sum, pm) => sum + (pm.principal_cost || 0), 0);
+  }
+
+  portfolioLiquidationValue(): number {
+    return this.positionMetrics.reduce((sum, pm) => sum + (pm.liquidation_value || 0), 0);
+  }
+
+  portfolioCushion(): number {
+    return this.positionMetrics.reduce((sum, pm) => sum + (pm.cushion || 0), 0);
+  }
+
+  portfolioSafetyReserve(): number {
+    return this.positionMetrics.reduce((sum, pm) => sum + (pm.safety_reserve || 0), 0);
+  }
+
+  portfolioWithdrawableNow(): number {
+    return this.positionMetrics.reduce((sum, pm) => sum + (pm.withdrawable_now || 0), 0);
+  }
+
+  portfolioProtectedNow(): boolean | null {
+    if (!this.positionMetrics.length) return null;
+    const principal = this.portfolioPrincipalCost();
+    if (!principal) return false;
+    return this.portfolioLiquidationValue() >= principal;
   }
 
   reserveCoverageClass(value?: number | null): string {
@@ -2444,6 +2633,34 @@ export class AppComponent implements OnInit {
     }
   }
 
+  private tradeContractLimit(): number | null {
+    const legId = this.selectedTradeBaseLegId || this.tradeDraft?.base_leg_id;
+    if (!legId) {
+      return null;
+    }
+    const entry = this.tradeBaseLegLookup[legId];
+    const candidate = entry?.net ?? entry?.open?.quantity ?? entry?.mark?.quantity;
+    const numeric = this.toNumber(candidate as number | string | undefined);
+    if (numeric === undefined || numeric <= 0) {
+      return null;
+    }
+    return Math.floor(numeric);
+  }
+
+  private applyTradeContractLimit(force: boolean = false): void {
+    if (this.tradeDraft.action !== 'Open') {
+      return;
+    }
+    const maxContracts = this.tradeContractLimit();
+    if (maxContracts === null) {
+      return;
+    }
+    const current = this.toNumber(this.tradeDraft.contracts);
+    if (force || current === undefined || current > maxContracts) {
+      this.tradeDraft.contracts = maxContracts;
+    }
+  }
+
   private updateLedgerFilterOptions(summaries: LedgerSummary[]): void {
     const tickers = new Set<string>();
     const sides = new Set<string>();
@@ -2677,6 +2894,9 @@ export class AppComponent implements OnInit {
         return;
       }
       const action = (row.action || '').toLowerCase();
+      if (action.includes('mark')) {
+        return;
+      }
       const delta = action.includes('close') ? -contracts : contracts;
       const prev = balances[baseKey]?.remaining ?? 0;
       balances[baseKey] = {

@@ -104,16 +104,24 @@ export const normalizeExpiryOption = (value: string | null | undefined): string 
 };
 
 export const extractBaseKey = (row: LedgerRow): string | null => {
+  const baseLegId = (row.base_leg_id || '').toString().trim();
+  let baseKey: string | null = null;
   if (row.key) {
     const parts = row.key.split('|');
     if (parts.length >= 4) {
-      return parts.slice(0, 4).join('|');
+      baseKey = parts.slice(0, 4).join('|');
     }
   }
   if (row.ticker && row.strike !== undefined && row.expiry && row.side) {
-    return `${row.ticker}|${row.strike}|${row.expiry}|${row.side}`.toUpperCase();
+    baseKey = `${row.ticker}|${row.strike}|${row.expiry}|${row.side}`.toUpperCase();
   }
-  return null;
+  if (baseLegId && baseKey) {
+    return `${baseLegId}|${baseKey}`;
+  }
+  if (baseLegId) {
+    return baseLegId;
+  }
+  return baseKey;
 };
 
 export const calculateJuicePerContractRaw = (row: LedgerRow): number | null => {
@@ -230,6 +238,9 @@ export const buildLedgerSummaries = (
     }
 
     const action = (row.action || '').toLowerCase();
+    if (action.includes('mark')) {
+      return;
+    }
     const isClose = action.includes('close');
     const contracts = Number(row.contracts || 0);
     const premium = Number(row.premium_buyback || 0);
