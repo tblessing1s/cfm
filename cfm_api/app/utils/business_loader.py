@@ -465,9 +465,10 @@ def list_base_legs(position_id: Optional[str] = None) -> pd.DataFrame:
         return df
     if position_id:
         df = df[df["position_id"] == position_id]
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df["expiry"] = pd.to_datetime(df["expiry"], errors="coerce")
-    return df.replace({np.nan: None})
+    df["date"] = pd.to_datetime(df["date"], errors="coerce", format="mixed")
+    df["expiry"] = pd.to_datetime(df["expiry"], errors="coerce", format="mixed")
+    df = df.astype(object).where(pd.notna(df), None)
+    return df
 
 
 def list_cash_allocations(account: Optional[str] = None) -> pd.DataFrame:
@@ -681,6 +682,40 @@ def add_reserve(payload: Dict[str, Any]) -> Dict[str, Any]:
         "note_or_rule_text": payload.get("note_or_rule_text"),
     }
     reserves_store.append_rows([row])
+    return row
+
+
+def upsert_reserve(payload: Dict[str, Any], note_prefix: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Upsert a reserve row keyed by position/date and optional note prefix.
+    Intended for computed reserves (ex: SafetyReserve) so duplicates are avoided.
+    """
+    row = {
+        "position_id": payload["position_id"],
+        "as_of_date": payload["as_of_date"],
+        "reserved_cash": payload["reserved_cash"],
+        "note_or_rule_text": payload.get("note_or_rule_text"),
+    }
+    df = reserves_store.load()
+    if df.empty:
+        reserves_store.append_rows([row])
+        return row
+
+    df["position_id"] = df.get("position_id").astype(str)
+    df["as_of_date"] = pd.to_datetime(df.get("as_of_date"), errors="coerce")
+    target_date = pd.to_datetime(row["as_of_date"], errors="coerce")
+    mask = df["position_id"] == str(row["position_id"])
+    if target_date is not None and not pd.isna(target_date):
+        mask &= df["as_of_date"].dt.normalize() == target_date.normalize()
+    if note_prefix:
+        note_series = df.get("note_or_rule_text", "").fillna("").astype(str)
+        mask &= note_series.str.startswith(note_prefix)
+
+    if mask.any():
+        df = df[~mask]
+
+    df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+    reserves_store.overwrite(df.where(pd.notna(df), None).to_dict("records"))
     return row
 
 

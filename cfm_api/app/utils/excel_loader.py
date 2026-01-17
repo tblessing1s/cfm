@@ -319,7 +319,6 @@ def append_ledger_entries(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         ws = wb["Ledger"]
         _ensure_ledger_headers(ws)
         cols = _get_ledger_columns(ws)
-        r = ws.max_row + 1
 
         ticker = str(entry.get("ticker") or "").upper()
         action = str(entry.get("action") or "Open").strip().upper()
@@ -328,6 +327,7 @@ def append_ledger_entries(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         strike = entry.get("strike")
         premium = entry.get("premium")
         underlying = entry.get("underlying")
+        base_leg_id = entry.get("base_leg_id")
         # Store expiry as a midnight datetime to keep Excel column typed as datetime
         expiry_ts = pd.to_datetime(entry.get("expiry"), errors="coerce").normalize()
         expiry = expiry_ts.to_pydatetime() if expiry_ts is not pd.NaT else None
@@ -339,44 +339,83 @@ def append_ledger_entries(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         elif "travis" in descriptor.name.lower():
             account_label = "Travis"
 
-        key = _build_key(ticker, strike, expiry, side, action)
-
-        if "Account" in cols:
-            ws.cell(row=r, column=cols["Account"], value=account_label)
-        if "Date" in cols:
-            ws.cell(row=r, column=cols["Date"], value=trade_dt)
-        if "Action" in cols:
-            ws.cell(row=r, column=cols["Action"], value=action)
-        if "Symbol" in cols:
-            ws.cell(row=r, column=cols["Symbol"], value=ticker)
-        if "Contracts" in cols:
-            ws.cell(row=r, column=cols["Contracts"], value=contracts)
-        if "Strike" in cols:
-            ws.cell(row=r, column=cols["Strike"], value=strike)
-        if "Expiry" in cols:
-            ws.cell(row=r, column=cols["Expiry"], value=expiry)
-        if "Premium/Buyback" in cols:
-            ws.cell(row=r, column=cols["Premium/Buyback"], value=premium)
-        if "Underlying" in cols:
-            if underlying in (None, ""):
+        def resolve_underlying(value: Any) -> Any:
+            if "Underlying" not in cols:
+                return value
+            resolved = value
+            if resolved in (None, ""):
                 # Attempt to reuse latest underlying for this key if omitted
                 try:
-                    underlying = _latest_underlying(ws, cols, ticker, strike, expiry, side) or _cached_underlying(ticker, expiry, trade_dt)
+                    resolved = _latest_underlying(ws, cols, ticker, strike, expiry, side) or _cached_underlying(ticker, expiry, trade_dt)
                 except Exception as exc:
                     raise ValueError(f"Unable to resolve underlying for {ticker} {strike} {expiry} {side}: {exc}")
-            if underlying in (None, ""):
+            if resolved in (None, ""):
                 raise ValueError(f"Missing underlying for {ticker} {strike} {expiry} {side}; aborting write")
-            ws.cell(row=r, column=cols["Underlying"], value=underlying)
-        if "Base Position Id" in cols:
-            ws.cell(row=r, column=cols["Base Position Id"], value=entry.get("base_position_id"))
-        if "Base Leg Id" in cols:
-            ws.cell(row=r, column=cols["Base Leg Id"], value=entry.get("base_leg_id"))
-        if "Key" in cols:
-            ws.cell(row=r, column=cols["Key"], value=key)
-        if "Side" in cols:
-            ws.cell(row=r, column=cols["Side"], value=side)
+            return resolved
 
-        wb.save(descriptor.path)
+        def write_row(row_idx: int, action_value: str, premium_value: Any, underlying_value: Any) -> str:
+            key_value = _build_key(ticker, strike, expiry, side, action_value)
+            if "Account" in cols:
+                ws.cell(row=row_idx, column=cols["Account"], value=account_label)
+            if "Date" in cols:
+                ws.cell(row=row_idx, column=cols["Date"], value=trade_dt)
+            if "Action" in cols:
+                ws.cell(row=row_idx, column=cols["Action"], value=action_value)
+            if "Symbol" in cols:
+                ws.cell(row=row_idx, column=cols["Symbol"], value=ticker)
+            if "Contracts" in cols:
+                ws.cell(row=row_idx, column=cols["Contracts"], value=contracts)
+            if "Strike" in cols:
+                ws.cell(row=row_idx, column=cols["Strike"], value=strike)
+            if "Expiry" in cols:
+                ws.cell(row=row_idx, column=cols["Expiry"], value=expiry)
+            if "Premium/Buyback" in cols:
+                ws.cell(row=row_idx, column=cols["Premium/Buyback"], value=premium_value)
+            if "Underlying" in cols:
+                ws.cell(row=row_idx, column=cols["Underlying"], value=underlying_value)
+            if "Base Position Id" in cols:
+                ws.cell(row=row_idx, column=cols["Base Position Id"], value=entry.get("base_position_id"))
+            if "Base Leg Id" in cols:
+                ws.cell(row=row_idx, column=cols["Base Leg Id"], value=base_leg_id)
+            if "Key" in cols:
+                ws.cell(row=row_idx, column=cols["Key"], value=key_value)
+            if "Side" in cols:
+                ws.cell(row=row_idx, column=cols["Side"], value=side)
+            return key_value
+
+        if action == "CLOSE" and base_leg_id:
+            mark_row = _find_mark_row(ws, cols, base_leg_id)
+            if mark_row:
+                resolved_underlying = resolve_underlying(underlying)
+                key = write_row(mark_row, "CLOSE", premium, resolved_underlying)
+                wb.save(descriptor.path)
+                appended_rows.append(
+                    {
+                        "account": descriptor.name,
+                        "date": trade_dt.date().isoformat() if hasattr(trade_dt, "date") else None,
+                        "action": "CLOSE",
+                        "side": side,
+                        "ticker": ticker,
+                        "contracts": contracts,
+                        "strike": strike,
+                        "expiry": expiry.isoformat() if expiry else None,
+                        "premium_buyback": premium,
+                        "underlying": resolved_underlying,
+                        "juice_per_contract": None,
+                        "signed_juice_dollars": None,
+                        "signed_juice_per_100": None,
+                        "key": key,
+                        "notes": None,
+                        "base_position_id": entry.get("base_position_id"),
+                        "base_leg_id": base_leg_id,
+                        "row_number": mark_row,
+                    }
+                )
+                continue
+
+        resolved_underlying = resolve_underlying(underlying)
+        r = ws.max_row + 1
+        key = write_row(r, action, premium, resolved_underlying)
 
         appended_rows.append(
             {
@@ -387,19 +426,48 @@ def append_ledger_entries(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]
                 "ticker": ticker,
                 "contracts": contracts,
                 "strike": strike,
-        "expiry": expiry.isoformat() if expiry else None,
+                "expiry": expiry.isoformat() if expiry else None,
                 "premium_buyback": premium,
-                "underlying": underlying,
+                "underlying": resolved_underlying,
                 "juice_per_contract": None,
                 "signed_juice_dollars": None,
                 "signed_juice_per_100": None,
                 "key": key,
                 "notes": None,
                 "base_position_id": entry.get("base_position_id"),
-                "base_leg_id": entry.get("base_leg_id"),
+                "base_leg_id": base_leg_id,
                 "row_number": r,
             }
         )
+
+        if action == "OPEN" and base_leg_id and not _find_mark_row(ws, cols, base_leg_id):
+            mark_row = ws.max_row + 1
+            mark_action = "MARK"
+            mark_key = write_row(mark_row, mark_action, premium, resolved_underlying)
+            appended_rows.append(
+                {
+                    "account": descriptor.name,
+                    "date": trade_dt.date().isoformat() if hasattr(trade_dt, "date") else None,
+                    "action": mark_action,
+                    "side": side,
+                    "ticker": ticker,
+                    "contracts": contracts,
+                    "strike": strike,
+                    "expiry": expiry.isoformat() if expiry else None,
+                    "premium_buyback": premium,
+                    "underlying": resolved_underlying,
+                    "juice_per_contract": None,
+                    "signed_juice_dollars": None,
+                    "signed_juice_per_100": None,
+                    "key": mark_key,
+                    "notes": None,
+                    "base_position_id": entry.get("base_position_id"),
+                    "base_leg_id": base_leg_id,
+                    "row_number": mark_row,
+                }
+            )
+
+        wb.save(descriptor.path)
 
     return appended_rows
 
@@ -446,6 +514,22 @@ def _ensure_ledger_headers(ws) -> None:
         ws.cell(row=1, column=len(headers) + 1, value="Base Leg Id")
         changed = True
     # Caller is responsible for saving the workbook; avoid using ws.parent.filename.
+
+
+def _find_mark_row(ws, cols: Dict[str, int], base_leg_id: Any) -> Optional[int]:
+    action_col = cols.get("Action")
+    leg_col = cols.get("Base Leg Id")
+    target = str(base_leg_id or "").strip()
+    if not action_col or not leg_col or not target:
+        return None
+    for row in range(ws.max_row, 1, -1):
+        leg_val = ws.cell(row=row, column=leg_col).value
+        if str(leg_val or "").strip() != target:
+            continue
+        action_val = ws.cell(row=row, column=action_col).value
+        if str(action_val or "").strip().upper() == "MARK":
+            return row
+    return None
 
 
 def _latest_underlying(ws, cols: Dict[str, int], ticker: str, strike: Any, expiry: Any, side: str) -> Any:

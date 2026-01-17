@@ -13,6 +13,7 @@ from ..models.business import (
     BusinessDashboard,
     PositionMetrics,
     BasePosition,
+    ShortLegSignal,
     NavPoint,
     PortfolioSummary,
     StockSummaryRow,
@@ -532,6 +533,7 @@ def _apply_expiry_filter(
 def _prepare_ledger_group_fields(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df["action"] = df.get("action", "").astype(str).str.lower()
+    df = df[~df["action"].str.contains("mark", na=False)]
     df["contracts"] = pd.to_numeric(df.get("contracts"), errors="coerce").fillna(0.0)
     df["ticker"] = df.get("ticker").astype(str).str.upper()
     df["side"] = df.get("side").astype(str)
@@ -664,6 +666,7 @@ def _short_intrinsic_realized_for_position(
     if df.empty:
         return 0.0
     df["action"] = df.get("action", "").astype(str).str.lower()
+    df = df[~df["action"].str.contains("mark", na=False)]
     df["date"] = pd.to_datetime(df.get("date"), errors="coerce")
     if opened_date is not None:
         df = df[df["date"] >= opened_date]
@@ -674,6 +677,87 @@ def _short_intrinsic_realized_for_position(
         return 0.0
 
     return _net_protection_from_ledger(df)
+
+
+def _short_intrinsic_unrealized_for_position(
+    account: Optional[str],
+    symbol: str,
+    base_position_id: Optional[str] = None,
+    base_leg_ids: Optional[List[str]] = None,
+    expiry_start: Optional[pd.Timestamp] = None,
+    expiry_end: Optional[pd.Timestamp] = None,
+    legs: Optional[pd.DataFrame] = None,
+) -> float:
+    """Unrealized short intrinsic for open shorts (negative protection)."""
+    rows = excel_loader.get_ledger_rows(account)
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return 0.0
+    base_position_ids = [base_position_id] if base_position_id else None
+    df = _filter_ledger_scope(df, base_leg_ids, base_position_ids, symbol)
+    if df.empty:
+        return 0.0
+    df = _apply_expiry_filter(df, expiry_start, expiry_end)
+    if df.empty:
+        return 0.0
+    df["action"] = df.get("action", "").astype(str).str.lower()
+    df = df[~df["action"].str.contains("mark", na=False)]
+    df["contracts"] = pd.to_numeric(df.get("contracts"), errors="coerce").fillna(0.0)
+    df["ticker"] = df.get("ticker").astype(str).str.upper()
+    df["side"] = df.get("side").astype(str)
+    df["strike"] = pd.to_numeric(df.get("strike"), errors="coerce")
+    df["expiry"] = df.get("expiry")
+    df["net_contracts_delta"] = df["contracts"].where(~df["action"].str.contains("close", na=False), -df["contracts"])
+
+    group_cols = ["ticker", "side", "strike", "expiry"]
+    if "base_leg_id" in df.columns:
+        df["base_leg_id"] = df.get("base_leg_id").astype(str)
+        group_cols = ["base_leg_id"] + group_cols
+
+    grouped = (
+        df.groupby(group_cols, dropna=False)
+        .agg(net_contracts=("net_contracts_delta", "sum"))
+        .reset_index()
+    )
+    open_groups = grouped[grouped["net_contracts"] > 0]
+    if open_groups.empty:
+        return 0.0
+
+    if legs is None and base_position_id:
+        legs = business_loader.list_base_legs(base_position_id)
+    underlying_by_leg, fallback_underlying = _latest_underlying_by_leg(legs) if legs is not None else ({}, None)
+
+    total = 0.0
+    for _, row in open_groups.iterrows():
+        base_leg_id = str(row.get("base_leg_id") or "").strip()
+        underlying = underlying_by_leg.get(base_leg_id) or fallback_underlying
+        if underlying is None:
+            continue
+        strike = _to_float_or_none(row.get("strike"))
+        if strike is None:
+            continue
+        side = str(row.get("side") or "").lower()
+        is_put = "put" in side
+        intrinsic_per = max(0.0, strike - underlying) if is_put else max(0.0, underlying - strike)
+        if intrinsic_per <= 0:
+            continue
+
+        # Skip long opens (debits) when possible.
+        if "premium_buyback" in df.columns:
+            match = df
+            for col in group_cols:
+                match = match[match[col] == row.get(col)]
+            opens = match[match["action"].str.contains("open", na=False)]
+            premium = pd.to_numeric(opens.get("premium_buyback"), errors="coerce").dropna()
+            if not premium.empty and premium.mean() < 0:
+                continue
+
+        contracts = _to_float_or_none(row.get("net_contracts"))
+        if contracts is None or contracts <= 0:
+            continue
+        total -= float(intrinsic_per) * float(contracts) * CONTRACT_MULTIPLIER
+
+    return float(round(total, 2))
 
 
 def _long_extrinsic_loan_from_legs(
@@ -856,6 +940,38 @@ def _current_base_intrinsic_from_legs(
             continue
         total += float(intrinsic_per) * float(qty) * 100.0
     return float(round(total, 2))
+
+
+def _latest_underlying_by_leg(legs: pd.DataFrame) -> Tuple[Dict[str, float], Optional[float]]:
+    """Return underlying by base_leg_id from MARK rows plus a fallback latest underlying."""
+    if legs.empty or "underlying_price" not in legs.columns:
+        return {}, None
+    marks = legs[legs["tag"].astype(str).str.upper() == "MARK"].copy()
+    if marks.empty:
+        return {}, None
+    # Normalize dates for stable ordering if multiple marks exist.
+    if "date" in marks.columns:
+        marks["date"] = pd.to_datetime(marks.get("date"), errors="coerce")
+    if "time" in marks.columns:
+        marks["time"] = marks.get("time").astype(str)
+    marks = marks.dropna(subset=["underlying_price"])
+    if marks.empty:
+        return {}, None
+    # Prefer most recent mark per base_leg_id.
+    marks = marks.sort_values(["date", "time"], na_position="last")
+    latest_by_leg: Dict[str, float] = {}
+    for _, row in marks.iterrows():
+        leg_id = str(row.get("base_leg_id") or "").strip()
+        if not leg_id:
+            continue
+        underlying = _to_float_or_none(row.get("underlying_price"))
+        if underlying is None:
+            continue
+        latest_by_leg[leg_id] = float(underlying)
+    fallback = None
+    if not marks.empty:
+        fallback = _to_float_or_none(marks.iloc[-1].get("underlying_price"))
+    return latest_by_leg, float(fallback) if fallback is not None else None
 
 
 def _open_base_leg_ids(legs: pd.DataFrame) -> List[str]:
@@ -1058,6 +1174,446 @@ def _short_extrinsic_net_for_position(
     open_extrinsic = float(df[df["action"].str.contains("open", na=False)]["signed_juice_dollars"].sum())
     close_extrinsic = float(df[df["action"].str.contains("close", na=False)]["signed_juice_dollars"].sum())
     return float(open_extrinsic - close_extrinsic)
+
+
+def _normalize_ledger_df(rows: List[Dict[str, object]]) -> pd.DataFrame:
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    if "action" in df.columns:
+        df["action"] = df.get("action").astype(str).str.upper()
+    else:
+        df["action"] = ""
+    if "side" in df.columns:
+        df["side"] = df.get("side").astype(str).str.upper()
+    else:
+        df["side"] = ""
+    if "ticker" in df.columns:
+        df["ticker"] = df.get("ticker").astype(str).str.upper()
+    else:
+        df["ticker"] = ""
+    df["contracts"] = pd.to_numeric(df.get("contracts"), errors="coerce")
+    df["strike"] = pd.to_numeric(df.get("strike"), errors="coerce")
+    df["premium_buyback"] = pd.to_numeric(df.get("premium_buyback"), errors="coerce")
+    df["underlying"] = pd.to_numeric(df.get("underlying"), errors="coerce")
+    df["expiry"] = pd.to_datetime(df.get("expiry"), errors="coerce")
+    df["date"] = pd.to_datetime(df.get("date"), errors="coerce")
+    df["row_number"] = pd.to_numeric(df.get("row_number"), errors="coerce")
+    if "condition" in df.columns:
+        df["condition_norm"] = df.get("condition").apply(_normalize_condition)
+    else:
+        df["condition_norm"] = ""
+    if "base_position_id" in df.columns:
+        df["base_position_id"] = df.get("base_position_id").astype(str)
+    else:
+        df["base_position_id"] = ""
+    if "base_leg_id" in df.columns:
+        df["base_leg_id"] = df.get("base_leg_id").astype(str)
+    else:
+        df["base_leg_id"] = ""
+    df["order"] = df["row_number"]
+    missing = df["order"].isna()
+    if missing.any():
+        date_order = pd.to_datetime(df.loc[missing, "date"], errors="coerce").view("int64")
+        df.loc[missing, "order"] = date_order
+    return df
+
+
+def _short_pair_key(row: pd.Series) -> str:
+    ticker = str(row.get("ticker") or "").upper()
+    side = str(row.get("side") or "").upper()
+    strike = row.get("strike")
+    strike_str = f"{float(strike):.4f}" if strike is not None and pd.notna(strike) else ""
+    expiry = row.get("expiry")
+    expiry_str = ""
+    if isinstance(expiry, pd.Timestamp) and not pd.isna(expiry):
+        expiry_str = expiry.date().isoformat()
+    base_leg_id = str(row.get("base_leg_id") or "").strip()
+    base_position_id = str(row.get("base_position_id") or "").strip()
+    anchor = base_leg_id or base_position_id
+    return f"{ticker}|{side}|{strike_str}|{expiry_str}|{anchor}"
+
+
+def _short_instances_for_position(df: pd.DataFrame) -> Tuple[List[Dict[str, object]], List[Dict[str, object]]]:
+    if df.empty:
+        return [], []
+    working = df.copy()
+    working = working[working["action"].isin({"OPEN", "CLOSE", "MARK"})]
+    working["side"] = working.get("side").astype(str).str.upper()
+    working = working[working["side"].isin({"CALL", "PUT"})]
+    if working.empty:
+        return [], []
+    working["pair_key"] = working.apply(_short_pair_key, axis=1)
+    working = working.sort_values(["order", "row_number"], na_position="last")
+
+    open_instances: List[Dict[str, object]] = []
+    closed_instances: List[Dict[str, object]] = []
+
+    for key, group in working.groupby("pair_key", dropna=False):
+        opens = group[group["action"] == "OPEN"].sort_values(["order", "row_number"], na_position="last")
+        closes = group[group["action"] == "CLOSE"].sort_values(["order", "row_number"], na_position="last")
+        marks = group[group["action"] == "MARK"].sort_values(["order", "row_number"], na_position="last")
+        close_idx = 0
+        for _, open_row in opens.iterrows():
+            open_order = open_row.get("order")
+            while close_idx < len(closes) and (
+                _to_float_or_none(closes.iloc[close_idx].get("order")) is not None
+                and _to_float_or_none(open_order) is not None
+                and closes.iloc[close_idx].get("order") <= open_order
+            ):
+                close_idx += 1
+            if close_idx < len(closes):
+                close_row = closes.iloc[close_idx]
+                close_idx += 1
+                closed_instances.append(
+                    {
+                        "pair_key": key,
+                        "open": open_row.to_dict(),
+                        "close": close_row.to_dict(),
+                    }
+                )
+                continue
+            mark_row = None
+            if not marks.empty:
+                later_marks = marks
+                if open_order is not None and pd.notna(open_order):
+                    later_marks = marks[marks["order"] >= open_order]
+                    if later_marks.empty:
+                        later_marks = marks
+                mark_row = later_marks.iloc[-1].to_dict()
+            open_instances.append(
+                {
+                    "pair_key": key,
+                    "open": open_row.to_dict(),
+                    "mark": mark_row,
+                }
+            )
+    return open_instances, closed_instances
+
+
+def _instance_contracts(instance: Dict[str, object]) -> Optional[float]:
+    for key in ("close", "mark", "open"):
+        row = instance.get(key)
+        if isinstance(row, dict):
+            contracts = _to_float_or_none(row.get("contracts"))
+            if contracts is not None:
+                return contracts
+    return None
+
+
+def _intrinsic_per_contract(underlying: Optional[float], strike: Optional[float], side: str) -> Optional[float]:
+    if underlying is None or strike is None:
+        return None
+    if "PUT" in side.upper():
+        return max(0.0, float(strike) - float(underlying))
+    return max(0.0, float(underlying) - float(strike))
+
+
+def _defense_debits_for_position(
+    df: pd.DataFrame,
+    closed_instances: List[Dict[str, object]],
+    max_gap: int = 5,
+) -> Tuple[List[float], Optional[float], Optional[float]]:
+    if df.empty:
+        return [], None, None
+    closes = df[df["action"] == "CLOSE"].sort_values(["order", "row_number"], na_position="last")
+    opens = df[df["action"] == "OPEN"].sort_values(["order", "row_number"], na_position="last")
+    if closes.empty:
+        return [], None, None
+
+    open_by_close: Dict[object, Dict[str, object]] = {}
+    for inst in closed_instances:
+        close_row = inst.get("close")
+        open_row = inst.get("open")
+        if isinstance(close_row, dict) and isinstance(open_row, dict):
+            key = close_row.get("row_number") or close_row.get("order")
+            open_by_close[key] = open_row
+
+    events: List[Tuple[float, float]] = []
+
+    for _, close_row in closes.iterrows():
+        close_order = close_row.get("order")
+        close_row_number = close_row.get("row_number")
+        close_premium = _to_float_or_none(close_row.get("premium_buyback"))
+        close_contracts = _to_float_or_none(close_row.get("contracts"))
+        if close_premium is None or close_contracts in (None, 0):
+            continue
+
+        cond = _normalize_condition(close_row.get("condition_norm") or close_row.get("condition") or "")
+        is_defense_tag = "DEFENSE" in cond
+        is_income_tag = "INCOME" in cond
+        is_roll_tag = "ROLL" in cond
+
+        roll_open = None
+        if not opens.empty:
+            subset = opens
+            if "base_position_id" in opens.columns:
+                subset = subset[opens["base_position_id"] == close_row.get("base_position_id")]
+            subset = subset[subset["ticker"] == close_row.get("ticker")]
+            subset = subset[subset["side"] == close_row.get("side")]
+            if close_row_number is not None and pd.notna(close_row_number):
+                subset = subset[subset["row_number"] > close_row_number]
+                if not subset.empty:
+                    candidate = subset.iloc[0]
+                    gap = candidate.get("row_number") - close_row_number
+                    if is_roll_tag or (gap is not None and gap <= max_gap):
+                        roll_open = candidate.to_dict()
+            else:
+                close_date = close_row.get("date")
+                if pd.notna(close_date):
+                    subset = subset[subset["date"] >= close_date]
+                    if not subset.empty:
+                        candidate = subset.iloc[0]
+                        if is_roll_tag or (candidate.get("date") - close_date).days <= 1:
+                            roll_open = candidate.to_dict()
+
+        debit_total = None
+        if roll_open:
+            open_credit = _to_float_or_none(roll_open.get("premium_buyback"))
+            if open_credit is not None:
+                debit_total = max(0.0, (close_premium - open_credit) * close_contracts * CONTRACT_MULTIPLIER)
+        else:
+            open_row = open_by_close.get(close_row_number or close_order)
+            if open_row:
+                open_credit = _to_float_or_none(open_row.get("premium_buyback"))
+                if open_credit is not None:
+                    debit_total = max(0.0, (close_premium - open_credit) * close_contracts * CONTRACT_MULTIPLIER)
+
+        if debit_total is None:
+            continue
+
+        realized_pnl = None
+        open_row = open_by_close.get(close_row_number or close_order)
+        if open_row:
+            open_credit = _to_float_or_none(open_row.get("premium_buyback"))
+            if open_credit is not None:
+                realized_pnl = (open_credit - close_premium) * close_contracts * CONTRACT_MULTIPLIER
+
+        is_defense = False
+        if is_defense_tag:
+            is_defense = True
+        elif is_income_tag:
+            is_defense = False
+        elif roll_open and debit_total > 0:
+            is_defense = True
+        elif realized_pnl is not None and realized_pnl < 0:
+            is_defense = True
+
+        if is_defense:
+            per_contract = debit_total / close_contracts if close_contracts else 0.0
+            order_val = _to_float_or_none(close_order) or 0.0
+            events.append((order_val, per_contract))
+
+    if not events:
+        return [], None, None
+
+    events_sorted = sorted(events, key=lambda item: item[0])
+    last10 = [item[1] for item in events_sorted[-10:]]
+    avg_dd = float(np.mean(last10)) if last10 else None
+    p90 = float(np.percentile(last10, 90)) if last10 else None
+    if avg_dd is None:
+        debit_cap = None
+    else:
+        debit_cap = max(avg_dd * 1.5, p90 or 0.0)
+    return last10, avg_dd, debit_cap
+
+
+def _latest_stock_closes(symbol: str) -> Tuple[Optional[float], Optional[float]]:
+    df = business_loader.list_circuit_breakers(symbol)
+    if df.empty or "date" not in df.columns:
+        return None, None
+    df = df.dropna(subset=["date"]).sort_values("date")
+    if df.empty:
+        return None, None
+    close_today = _to_float_or_none(df.iloc[-1].get("stock_close"))
+    close_yesterday = None
+    if len(df) > 1:
+        close_yesterday = _to_float_or_none(df.iloc[-2].get("stock_close"))
+    return close_today, close_yesterday
+
+
+def _short_position_snapshot(df: pd.DataFrame) -> Dict[str, object]:
+    open_instances, closed_instances = _short_instances_for_position(df)
+    week_start, week_end = _current_week_window()
+    realized_total = 0.0
+    unrealized_total = 0.0
+    working_juice = 0.0
+    locked_juice = 0.0
+    weekly_locked = 0.0
+    open_short_contracts = 0.0
+
+    for inst in closed_instances:
+        open_row = inst.get("open") if isinstance(inst.get("open"), dict) else None
+        close_row = inst.get("close") if isinstance(inst.get("close"), dict) else None
+        if not open_row or not close_row:
+            continue
+        credit_open = _to_float_or_none(open_row.get("premium_buyback"))
+        debit_close = _to_float_or_none(close_row.get("premium_buyback"))
+        contracts = _instance_contracts(inst)
+        if credit_open is None or debit_close is None or not contracts:
+            continue
+        if credit_open < 0:
+            continue
+        pnl = (credit_open - debit_close) * contracts * CONTRACT_MULTIPLIER
+        realized_total += pnl
+        close_date = pd.to_datetime(close_row.get("date"), errors="coerce")
+        if pd.notna(close_date) and week_start <= close_date < week_end:
+            weekly_locked += pnl
+
+        side = str(open_row.get("side") or "").upper()
+        strike = _to_float_or_none(open_row.get("strike"))
+        underlying_open = _to_float_or_none(open_row.get("underlying"))
+        underlying_close = _to_float_or_none(close_row.get("underlying"))
+        intrinsic_open = _intrinsic_per_contract(underlying_open, strike, side)
+        intrinsic_close = _intrinsic_per_contract(underlying_close, strike, side)
+        if intrinsic_open is None or intrinsic_close is None:
+            continue
+        extrinsic_open = credit_open - intrinsic_open
+        extrinsic_close = debit_close - intrinsic_close
+        locked_juice += (extrinsic_open - extrinsic_close) * contracts * CONTRACT_MULTIPLIER
+
+    for inst in open_instances:
+        open_row = inst.get("open") if isinstance(inst.get("open"), dict) else None
+        mark_row = inst.get("mark") if isinstance(inst.get("mark"), dict) else None
+        if not open_row:
+            continue
+        credit_open = _to_float_or_none(open_row.get("premium_buyback"))
+        contracts = _instance_contracts(inst)
+        if credit_open is None or not contracts:
+            continue
+        if credit_open < 0:
+            continue
+        mark_premium = _to_float_or_none(mark_row.get("premium_buyback")) if mark_row else credit_open
+        if mark_premium is None:
+            continue
+        pnl = (credit_open - mark_premium) * contracts * CONTRACT_MULTIPLIER
+        unrealized_total += pnl
+        open_short_contracts += contracts
+
+        side = str(open_row.get("side") or "").upper()
+        strike = _to_float_or_none(open_row.get("strike"))
+        underlying_open = _to_float_or_none(open_row.get("underlying"))
+        underlying_mark = _to_float_or_none(mark_row.get("underlying")) if mark_row else None
+        intrinsic_open = _intrinsic_per_contract(underlying_open, strike, side)
+        intrinsic_now = _intrinsic_per_contract(underlying_mark, strike, side) if underlying_mark is not None else None
+        if intrinsic_open is None or intrinsic_now is None:
+            continue
+        extrinsic_open = credit_open - intrinsic_open
+        extrinsic_now = mark_premium - intrinsic_now
+        working_juice += (extrinsic_open - extrinsic_now) * contracts * CONTRACT_MULTIPLIER
+
+    last10, avg_dd, debit_cap = _defense_debits_for_position(df, closed_instances)
+    safety_reserve = (debit_cap or 0.0) * open_short_contracts if open_short_contracts else 0.0
+
+    return {
+        "open_instances": open_instances,
+        "closed_instances": closed_instances,
+        "short_realized_pnl": float(round(realized_total, 2)),
+        "short_unrealized_pnl": float(round(unrealized_total, 2)),
+        "working_juice": float(round(working_juice, 2)),
+        "locked_juice": float(round(locked_juice, 2)),
+        "weekly_locked_income": float(round(weekly_locked, 2)),
+        "open_short_contracts": float(round(open_short_contracts, 2)) if open_short_contracts else 0.0,
+        "last10_defense_debits": [float(round(val, 4)) for val in last10],
+        "avg_defense_debit": _clean_number(avg_dd),
+        "debit_cap": _clean_number(debit_cap),
+        "safety_reserve": float(round(safety_reserve, 2)) if safety_reserve else 0.0,
+    }
+
+
+def _short_signals_for_position(
+    open_instances: List[Dict[str, object]],
+    symbol: str,
+    cushion: float,
+    safety_reserve: float,
+) -> Tuple[List[ShortLegSignal], bool, bool, bool, Optional[str]]:
+    close_today, close_yesterday = _latest_stock_closes(symbol)
+    emergency = safety_reserve > 0 and cushion < (0.5 * safety_reserve)
+    signals: List[ShortLegSignal] = []
+    income_roll = False
+    protection_roll = False
+
+    for inst in open_instances:
+        open_row = inst.get("open") if isinstance(inst.get("open"), dict) else None
+        mark_row = inst.get("mark") if isinstance(inst.get("mark"), dict) else None
+        if not open_row:
+            continue
+        strike = _to_float_or_none(open_row.get("strike"))
+        expiry = open_row.get("expiry")
+        if isinstance(expiry, str):
+            expiry = pd.to_datetime(expiry, errors="coerce")
+        side = str(open_row.get("side") or "").upper()
+        contracts = _to_float_or_none(open_row.get("contracts"))
+        credit_open = _to_float_or_none(open_row.get("premium_buyback"))
+        mark_premium = _to_float_or_none(mark_row.get("premium_buyback")) if mark_row else credit_open
+        underlying_now = _to_float_or_none(mark_row.get("underlying")) if mark_row else _to_float_or_none(open_row.get("underlying"))
+        intrinsic_open = _intrinsic_per_contract(_to_float_or_none(open_row.get("underlying")), strike, side)
+        intrinsic_now = _intrinsic_per_contract(underlying_now, strike, side)
+        extrinsic_now = None
+        capture_pct = None
+        if credit_open is not None and mark_premium is not None and intrinsic_open is not None and intrinsic_now is not None:
+            extrinsic_open = credit_open - intrinsic_open
+            extrinsic_now = mark_premium - intrinsic_now
+            denom = extrinsic_open if extrinsic_open not in (None, 0) else None
+            if denom:
+                capture_pct = (extrinsic_open - extrinsic_now) / denom
+
+        dte = None
+        if isinstance(expiry, pd.Timestamp) and not pd.isna(expiry):
+            dte = (expiry.normalize() - pd.Timestamp.now().normalize()).days
+
+        near_atm = None
+        if underlying_now is not None and strike is not None and underlying_now:
+            near_atm = abs(float(underlying_now) - float(strike)) / float(underlying_now) <= 0.01
+
+        income_flag = bool(
+            (capture_pct is not None and capture_pct >= 0.70)
+            or (extrinsic_now is not None and extrinsic_now <= 0.15)
+            or (dte is not None and dte <= 2)
+        )
+        income_roll = income_roll or income_flag
+
+        close_price = close_today if close_today is not None else underlying_now
+        buffer_val = 0.01 * close_price if close_price is not None else None
+        trigger = False
+        confirm_down = False
+        if buffer_val is not None and strike is not None and close_price is not None:
+            trigger = close_price < (float(strike) - buffer_val)
+            if close_yesterday is not None:
+                confirm_down = (close_price < (float(strike) - buffer_val)) and (close_yesterday < (float(strike) - buffer_val))
+            else:
+                confirm_down = trigger
+        protection_trigger = (cushion < safety_reserve) or trigger
+        protection_flag = protection_trigger and (confirm_down or emergency)
+        protection_roll = protection_roll or protection_flag
+
+        signals.append(
+            ShortLegSignal(
+                key=str(inst.get("pair_key") or ""),
+                strike=_clean_number(strike),
+                expiry=expiry.date() if isinstance(expiry, pd.Timestamp) and not pd.isna(expiry) else None,
+                contracts=int(contracts) if contracts is not None else None,
+                extrinsic_now=_clean_number(extrinsic_now),
+                capture_pct=_clean_number(capture_pct),
+                dte=dte,
+                near_atm=near_atm,
+                income_roll=income_flag,
+                protection_roll=protection_flag,
+                emergency=emergency,
+            )
+        )
+
+    recommended = None
+    if emergency:
+        recommended = "PROTECTION ROLL NOW"
+    elif protection_roll:
+        recommended = "PROTECTION ROLL"
+    elif income_roll:
+        recommended = "INCOME ROLL / CLOSE"
+    else:
+        recommended = "HOLD"
+
+    return signals, income_roll, protection_roll, emergency, recommended
 
 
 def _condition_from_score(score: int) -> str:
@@ -1369,6 +1925,43 @@ def _position_value_cost_units(legs: pd.DataFrame) -> Tuple[float, float, float]
     return float(base_value), float(cost), float(current_units)
 
 
+def _base_entry_cost_from_legs(legs: pd.DataFrame) -> float:
+    """Sum entry debit for OPEN base legs (C0)."""
+    if legs.empty:
+        return 0.0
+    legs = legs.copy()
+    legs["tag"] = legs.get("tag").astype(str).str.upper()
+    legs["side"] = legs.get("side").astype(str).str.upper()
+    legs["quantity"] = pd.to_numeric(legs.get("quantity"), errors="coerce")
+    legs["price"] = pd.to_numeric(legs.get("price"), errors="coerce")
+    legs["amount"] = pd.to_numeric(legs.get("amount"), errors="coerce")
+    legs["fees"] = pd.to_numeric(legs.get("fees"), errors="coerce").fillna(0.0)
+
+    opens = legs[legs["tag"] == "OPEN"]
+    if opens.empty:
+        return 0.0
+
+    total = 0.0
+    for _, row in opens.iterrows():
+        if row.get("side") != "BUY":
+            continue
+        amt = row.get("amount")
+        if amt is not None and pd.notna(amt):
+            total += abs(float(amt))
+        else:
+            qty = row.get("quantity")
+            price = row.get("price")
+            instr = str(row.get("instrument_type") or "").upper()
+            mult = 100.0 if instr == "OPTION" else 1.0
+            if pd.isna(qty) or pd.isna(price):
+                continue
+            total += abs(float(qty) * float(price) * mult)
+        fees = row.get("fees") or 0.0
+        total += abs(float(fees))
+
+    return float(round(total, 2))
+
+
 def _initial_benchmark_cost(legs: pd.DataFrame, repl_rows: pd.DataFrame, base_value: float) -> float:
     """Derive the initial benchmark replacement cost (entry cost)."""
     # Prefer explicitly stored replacement cost (earliest)
@@ -1437,6 +2030,8 @@ def position_metrics(
     positions_df = business_loader.list_positions(account)
     reserves_df = business_loader.list_reserves()
     repl_df = business_loader.list_replacement_costs()
+    ledger_df = _normalize_ledger_df(excel_loader.get_ledger_rows(account))
+    snapshot_date = pd.Timestamp.now().normalize().date()
     results: List[PositionMetrics] = []
     expiry_start_ts = _normalize_expiry(expiry_start)
     expiry_end_ts = _normalize_expiry(expiry_end)
@@ -1483,7 +2078,7 @@ def position_metrics(
             expiry_end=expiry_end_ts,
         )
         base_leg_scope = open_leg_ids
-        intrinsic_protection = _short_intrinsic_realized_for_position(
+        intrinsic_realized = _short_intrinsic_realized_for_position(
             account,
             pos["symbol"],
             base_position_id=pid,
@@ -1493,6 +2088,16 @@ def position_metrics(
             expiry_start=expiry_start_ts,
             expiry_end=expiry_end_ts,
         )
+        intrinsic_unrealized = _short_intrinsic_unrealized_for_position(
+            account,
+            pos["symbol"],
+            base_position_id=pid,
+            base_leg_ids=base_leg_scope,
+            expiry_start=expiry_start_ts,
+            expiry_end=expiry_end_ts,
+            legs=legs,
+        )
+        intrinsic_protection = intrinsic_realized + intrinsic_unrealized
         short_extrinsic_net = _short_extrinsic_net_for_position(
             account,
             pos["symbol"],
@@ -1511,9 +2116,59 @@ def position_metrics(
         base_plus_protection = (current_base_intrinsic or 0.0) + (intrinsic_protection or 0.0)
         base_health_delta = base_plus_protection - (initial_intrinsic or 0.0)
 
+        ledger_scope = ledger_df
+        if not ledger_df.empty:
+            ledger_scope = ledger_df[ledger_df["base_position_id"] == str(pid)]
+        short_snapshot = _short_position_snapshot(ledger_scope) if ledger_scope is not None else {
+            "open_instances": [],
+            "closed_instances": [],
+            "short_realized_pnl": 0.0,
+            "short_unrealized_pnl": 0.0,
+            "working_juice": 0.0,
+            "locked_juice": 0.0,
+            "weekly_locked_income": 0.0,
+            "open_short_contracts": 0.0,
+            "last10_defense_debits": [],
+            "avg_defense_debit": None,
+            "debit_cap": None,
+            "safety_reserve": 0.0,
+        }
+
+        principal_cost = _base_entry_cost_from_legs(open_legs if not open_legs.empty else legs)
+        long_value_now = base_value
+        short_realized = float(short_snapshot.get("short_realized_pnl") or 0.0)
+        short_unrealized = float(short_snapshot.get("short_unrealized_pnl") or 0.0)
+        liquidation_value = (long_value_now or 0.0) + short_realized + short_unrealized
+        cushion = liquidation_value - (principal_cost or 0.0)
+        safety_reserve = float(short_snapshot.get("safety_reserve") or 0.0)
+        open_short_contracts = float(short_snapshot.get("open_short_contracts") or 0.0)
+        protected_now = None if not principal_cost else (liquidation_value >= principal_cost)
+        withdrawable_now = max(0.0, cushion - safety_reserve)
+
+        signals, income_roll, protection_roll, emergency_roll, recommended_action = _short_signals_for_position(
+            short_snapshot.get("open_instances") or [],
+            pos["symbol"],
+            cushion,
+            safety_reserve,
+        )
+
+        if safety_reserve or open_short_contracts:
+            try:
+                business_loader.upsert_reserve(
+                    {
+                        "position_id": str(pid),
+                        "as_of_date": snapshot_date,
+                        "reserved_cash": float(round(safety_reserve, 2)),
+                        "note_or_rule_text": "SafetyReserve = DebitCap(last10 defense avg * 1.5) * open_short_contracts",
+                    },
+                    note_prefix="SafetyReserve",
+                )
+            except Exception:
+                logger.debug("SafetyReserve upsert failed", exc_info=True)
+
         # Reserve: use explicit rows if present, otherwise default % of base value
         explicit_reserve = float(reserves_df[reserves_df["position_id"] == pid]["reserved_cash"].sum()) if not reserves_df.empty else 0.0
-        reserve_cash = explicit_reserve if explicit_reserve else (base_value * DEFAULT_RESERVE_PCT)
+        reserve_cash = explicit_reserve if explicit_reserve else (safety_reserve or (base_value * DEFAULT_RESERVE_PCT))
 
         replacement_ratio = None  # now Base + Protection coverage vs initial cost
         if replacement_cost:
@@ -1566,6 +2221,27 @@ def position_metrics(
                 scale_capacity_units=scale_capacity,
                 roll_plan_flag=plan_flag,
                 roll_action_flag=act_flag,
+                principal_cost=_clean_number(principal_cost),
+                long_value_now=_clean_number(long_value_now),
+                short_realized_pnl=_clean_number(short_realized),
+                short_unrealized_pnl=_clean_number(short_unrealized),
+                liquidation_value=_clean_number(liquidation_value),
+                protected_now=protected_now,
+                cushion=_clean_number(cushion),
+                working_juice=_clean_number(short_snapshot.get("working_juice")),
+                locked_juice=_clean_number(short_snapshot.get("locked_juice")),
+                weekly_locked_income=_clean_number(short_snapshot.get("weekly_locked_income")),
+                avg_defense_debit=_clean_number(short_snapshot.get("avg_defense_debit")),
+                debit_cap=_clean_number(short_snapshot.get("debit_cap")),
+                open_short_contracts=_clean_number(open_short_contracts),
+                safety_reserve=_clean_number(safety_reserve),
+                withdrawable_now=_clean_number(withdrawable_now),
+                income_roll=income_roll,
+                protection_roll=protection_roll,
+                emergency_roll=emergency_roll,
+                recommended_action=recommended_action,
+                last10_defense_debits=short_snapshot.get("last10_defense_debits") or [],
+                open_short_signals=signals,
             )
         )
     return results
@@ -1955,6 +2631,22 @@ def stock_detail(
         expiry_start=expiry_start_ts,
         expiry_end=expiry_end_ts,
     )
+    realized_short_intrinsic = protection or 0.0
+    unrealized_short_intrinsic = 0.0
+    for row in rows:
+        legs = business_loader.list_base_legs(row.position.position_id)
+        open_leg_ids = _open_base_leg_ids(legs)
+        if not open_leg_ids:
+            continue
+        unrealized_short_intrinsic += _short_intrinsic_unrealized_for_position(
+            account,
+            ticker,
+            base_position_id=row.position.position_id,
+            base_leg_ids=open_leg_ids,
+            expiry_start=expiry_start_ts,
+            expiry_end=expiry_end_ts,
+            legs=legs,
+        )
     opened = pd.to_datetime(pm.position.opened_date, errors="coerce")
     closed = pd.to_datetime(pm.position.closed_date, errors="coerce")
     raw_income = _ledger_income(
@@ -1974,7 +2666,7 @@ def stock_detail(
     )
     current_intrinsic = pm.current_base_intrinsic or 0.0
     intrinsic_gap = max(0.0, (initial_intrinsic or 0.0) - (current_intrinsic + (protection or 0.0)))
-    protection_effective = protection or 0.0
+    protection_effective = realized_short_intrinsic + unrealized_short_intrinsic
     income_adjusted = float(raw_income)
     denom_intrinsic = initial_intrinsic or original_base_value
     base_strength_ratio = _safe_ratio((current_base_value or 0) + protection_effective, denom_intrinsic)
@@ -2005,6 +2697,8 @@ def stock_detail(
         current_base_intrinsic=_clean_number(total_current_base_intrinsic),
         base_plus_protection=_clean_number(base_plus_protection),
         total_protection_collected=_clean_number(protection_effective),
+        short_intrinsic_realized=_clean_number(realized_short_intrinsic),
+        short_intrinsic_unrealized=_clean_number(unrealized_short_intrinsic),
         protection_gap=_clean_number(intrinsic_gap),
         net_juice_total=_clean_number(net_juice_total),
         short_extrinsic_net=_clean_number(total_short_extrinsic_net),

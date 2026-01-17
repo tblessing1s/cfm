@@ -71,6 +71,22 @@ class ReplacementCost(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ShortLegSignal(BaseModel):
+    key: str
+    strike: Optional[float] = None
+    expiry: Optional[date] = None
+    contracts: Optional[int] = None
+    extrinsic_now: Optional[float] = None
+    capture_pct: Optional[float] = None
+    dte: Optional[int] = None
+    near_atm: Optional[bool] = None
+    income_roll: bool = False
+    protection_roll: bool = False
+    emergency: bool = False
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class PositionMetrics(BaseModel):
     position: BasePosition
     base_value: Optional[float] = None
@@ -96,6 +112,27 @@ class PositionMetrics(BaseModel):
     scale_capacity_units: Optional[int] = None
     roll_plan_flag: bool = False
     roll_action_flag: bool = False
+    principal_cost: Optional[float] = None
+    long_value_now: Optional[float] = None
+    short_realized_pnl: Optional[float] = None
+    short_unrealized_pnl: Optional[float] = None
+    liquidation_value: Optional[float] = None
+    protected_now: Optional[bool] = None
+    cushion: Optional[float] = None
+    working_juice: Optional[float] = None
+    locked_juice: Optional[float] = None
+    weekly_locked_income: Optional[float] = None
+    avg_defense_debit: Optional[float] = None
+    debit_cap: Optional[float] = None
+    open_short_contracts: Optional[float] = None
+    safety_reserve: Optional[float] = None
+    withdrawable_now: Optional[float] = None
+    income_roll: bool = False
+    protection_roll: bool = False
+    emergency_roll: bool = False
+    recommended_action: Optional[str] = None
+    last10_defense_debits: List[float] = Field(default_factory=list)
+    open_short_signals: List[ShortLegSignal] = Field(default_factory=list)
 
 
 class BusinessDashboard(BaseModel):
@@ -190,6 +227,8 @@ class StockDetail(BaseModel):
     current_base_intrinsic: Optional[float] = None
     base_plus_protection: Optional[float] = None
     total_protection_collected: Optional[float] = None
+    short_intrinsic_realized: Optional[float] = None
+    short_intrinsic_unrealized: Optional[float] = None
     protection_gap: Optional[float] = None
     net_juice_total: Optional[float] = None
     short_extrinsic_net: Optional[float] = None
