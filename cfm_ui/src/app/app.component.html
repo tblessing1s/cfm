@@ -455,7 +455,7 @@
       </div>
     </section>
 
-    <section class="entry-card" *ngIf="showAdvanced && activeBusinessView === 'snapshot' && positionMetrics.length">
+    <section class="entry-card" *ngIf="activeBusinessView === 'snapshot' && positionMetrics.length">
       <div class="business-panel">
         <h2>Protection & Withdrawable</h2>
         <p class="text-muted">Answers: protected principal if flattened, and withdrawable income after defense reserve.</p>
@@ -466,7 +466,7 @@
               {{ portfolioProtectedNow() ? 'Yes' : 'No' }}
             </div>
             <div class="metric-help">
-              Liquidation {{ portfolioLiquidationValue() | number:'1.2-2' }} / C0 {{ portfolioPrincipalCost() | number:'1.2-2' }}
+              Liquidation {{ portfolioLiquidationValue() | number:'1.2-2' }} / Initial capital {{ portfolioPrincipalCost() | number:'1.2-2' }}
             </div>
           </div>
           <div class="metric-card">
@@ -478,6 +478,42 @@
               Cushion {{ portfolioCushion() | number:'1.2-2' }} - Safety Reserve {{ portfolioSafetyReserve() | number:'1.2-2' }}
             </div>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="entry-card" *ngIf="activeBusinessView === 'snapshot' && positionMetrics.length">
+      <div class="business-panel">
+        <h2>Per-Position Breakdown</h2>
+        <p class="text-muted">Initial capital vs liquidation, cushion, reserve, and withdrawable per base.</p>
+        <div class="table-wrapper rounded-lg border border-border bg-surface-2/40">
+          <table class="w-full border-collapse text-sm [&_th]:px-2 [&_th]:py-2 [&_td]:px-2 [&_td]:py-2 [&_th]:text-left [&_td]:text-left [&_tbody_tr]:border-b [&_tbody_tr]:border-border [&_tbody_tr:nth-child(even)]:bg-surface-2">
+            <thead class="text-xs uppercase tracking-wider text-muted">
+              <tr>
+                <th>Ticker</th>
+                <th>Protected</th>
+                <th>Liquidation</th>
+                <th>Initial capital</th>
+                <th>Cushion</th>
+                <th>Safety Reserve</th>
+                <th>Withdrawable</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let pm of positionMetrics">
+                <td class="font-semibold">{{ pm.position.symbol }}</td>
+                <td>{{ pm.protected_now ? 'Yes' : 'No' }}</td>
+                <td>{{ pm.liquidation_value || 0 | number:'1.2-2' }}</td>
+                <td>{{ pm.principal_cost || 0 | number:'1.2-2' }}</td>
+                <td>{{ pm.cushion || 0 | number:'1.2-2' }}</td>
+                <td>{{ pm.safety_reserve || 0 | number:'1.2-2' }}</td>
+                <td>{{ pm.withdrawable_now || 0 | number:'1.2-2' }}</td>
+              </tr>
+              <tr *ngIf="!positionMetrics.length">
+                <td colspan="7" class="text-center text-muted py-3">No positions yet.</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </section>
@@ -583,7 +619,7 @@
             <strong>{{ pm.net_juice_to_date || 0 | number:'1.2-2' }}</strong>
           </div>
           <div class="metric-row">
-            <span>Principal (C0)</span>
+            <span>Initial capital</span>
             <strong>{{ pm.principal_cost || 0 | number:'1.2-2' }}</strong>
           </div>
           <div class="metric-row">
