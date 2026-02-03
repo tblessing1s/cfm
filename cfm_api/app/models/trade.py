@@ -4,8 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, ConfigDict
-from datetime import date, datetime
+from pydantic import BaseModel, ConfigDict, model_validator
 
 
 class Trade(BaseModel):
@@ -119,6 +118,31 @@ class LedgerEntryCreate(BaseModel):
     base_position_id: Optional[str] = None
     base_leg_id: Optional[str] = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_strategy(cls, data):
+        if not isinstance(data, dict):
+            return data
+        raw = str(data.get("strategy") or "")
+        normalized = raw.strip()
+        lowered = normalized.lower()
+        if "cashflow" in lowered:
+            normalized = "CFM"
+        elif "juice" in lowered:
+            normalized = "JL"
+        data["strategy"] = normalized
+        return data
+
+    @model_validator(mode="after")
+    def _validate_required_fields(self):
+        strategy = (self.strategy or "").strip().upper()
+        side = (self.side or "").strip().lower()
+        action = (self.action or "").strip().lower()
+        if strategy == "CFM":
+            if not (self.base_position_id or "").strip():
+                raise ValueError("base_position_id is required for CFM ledger entries")
+        return self
+
 
 class LedgerUpdate(BaseModel):
     row_number: int
@@ -132,5 +156,31 @@ class LedgerUpdate(BaseModel):
     expiry: date
     trade_datetime: datetime
     premium: float
+    underlying: Optional[float] = None
     base_position_id: Optional[str] = None
     base_leg_id: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_strategy(cls, data):
+        if not isinstance(data, dict):
+            return data
+        raw = str(data.get("strategy") or "")
+        normalized = raw.strip()
+        lowered = normalized.lower()
+        if "cashflow" in lowered:
+            normalized = "CFM"
+        elif "juice" in lowered:
+            normalized = "JL"
+        data["strategy"] = normalized
+        return data
+
+    @model_validator(mode="after")
+    def _validate_required_fields(self):
+        strategy = (self.strategy or "").strip().upper()
+        side = (self.side or "").strip().lower()
+        action = (self.action or "").strip().lower()
+        if strategy == "CFM":
+            if not (self.base_position_id or "").strip():
+                raise ValueError("base_position_id is required for CFM ledger entries")
+        return self

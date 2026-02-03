@@ -83,6 +83,18 @@ def _maybe_migrate(target_path: Path) -> None:
         pass
 
 
+def _normalize_strategy(value: Any) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    lowered = text.lower()
+    if "cashflow" in lowered or "cfm" in lowered:
+        return "CFM"
+    if "juice" in lowered or "jl" in lowered:
+        return "JL"
+    return text
+
+
 NAV_FIELDS = [
     "account",
     "date",
@@ -109,6 +121,10 @@ positions_store = CsvStore(
         "base_type",
         "opened_date",
         "closed_date",
+        "capture_target_pct",
+        "min_dte_to_roll",
+        "cheap_buyback_threshold",
+        "hang_timer_max",
     ],
 )
 
@@ -130,6 +146,7 @@ legs_store = CsvStore(
         "tag",
         "condition",
         "underlying_price",
+        "delta",
     ],
 )
 
@@ -430,10 +447,14 @@ def add_position(payload: Dict[str, Any]) -> Dict[str, Any]:
         "position_id": payload.get("position_id") or _uuid(),
         "account": acct,
         "symbol": payload["symbol"].upper(),
-        "strategy": payload.get("strategy", "").strip(),
+        "strategy": _normalize_strategy(payload.get("strategy", "")),
         "base_type": payload.get("base_type", "").strip(),
         "opened_date": payload.get("opened_date"),
         "closed_date": payload.get("closed_date"),
+        "capture_target_pct": payload.get("capture_target_pct", 0.70),
+        "min_dte_to_roll": payload.get("min_dte_to_roll", 3),
+        "cheap_buyback_threshold": payload.get("cheap_buyback_threshold", 0.30),
+        "hang_timer_max": payload.get("hang_timer_max", 2),
     }
     positions_store.append_rows([row])
     return row
@@ -450,10 +471,14 @@ def update_position(position_id: str, payload: Dict[str, Any]) -> Dict[str, Any]
     # Update allowed fields
     for field in positions_store.fieldnames:
         if field in payload:
-            df.loc[mask, field] = payload.get(field)
+            if field == "strategy":
+                df.loc[mask, field] = _normalize_strategy(payload.get(field))
+            else:
+                df.loc[mask, field] = payload.get(field)
     # Rewrite file
     df = df.where(pd.notna(df), None)
     positions_store.overwrite(df.to_dict("records"))
+
     return df[mask].to_dict("records")[0]
 
 
@@ -467,8 +492,11 @@ def list_base_legs(position_id: Optional[str] = None) -> pd.DataFrame:
         df = df[df["position_id"] == position_id]
     df["date"] = pd.to_datetime(df["date"], errors="coerce", format="mixed")
     df["expiry"] = pd.to_datetime(df["expiry"], errors="coerce", format="mixed")
+    if "delta" in df.columns:
+        df["delta"] = pd.to_numeric(df.get("delta"), errors="coerce")
     df = df.astype(object).where(pd.notna(df), None)
     return df
+
 
 
 def list_cash_allocations(account: Optional[str] = None) -> pd.DataFrame:
@@ -517,6 +545,7 @@ def add_base_leg(payload: Dict[str, Any]) -> Dict[str, Any]:
     amount = payload.get("amount")
     instr = str(payload.get("instrument_type") or "").upper()
     underlying = payload.get("underlying_price")
+    delta = payload.get("delta")
     option_tokens = {"", "OPTION", "CALL", "PUT", "OPTION_CALL", "OPTION_PUT", "CALL_OPTION", "PUT_OPTION"}
     is_option = instr in option_tokens
     is_put = instr in {"PUT", "OPTION_PUT", "PUT_OPTION"}
@@ -556,6 +585,10 @@ def add_base_leg(payload: Dict[str, Any]) -> Dict[str, Any]:
         underlying = abs(float(underlying)) if underlying is not None else None
     except Exception:
         underlying = None
+    try:
+        delta = float(delta) if delta not in (None, "") else None
+    except Exception:
+        delta = None
     try:
         fees = abs(float(fees)) if fees is not None else 0
     except Exception:
@@ -626,6 +659,7 @@ def add_base_leg(payload: Dict[str, Any]) -> Dict[str, Any]:
         "tag": payload.get("tag"),
         "condition": payload.get("condition"),
         "underlying_price": underlying,
+        "delta": delta,
     }
 
     # Manage MARK/CLOSE upsert so only one MARK exists per base_leg_id; for OPEN ensure a paired MARK row exists.
@@ -660,6 +694,30 @@ def add_base_leg(payload: Dict[str, Any]) -> Dict[str, Any]:
         df_new.append(mark_row)
     df = pd.concat([df, pd.DataFrame(df_new)], ignore_index=True)
     legs_store.overwrite(df.where(pd.notna(df), None).to_dict("records"))
+    return row
+
+
+def update_base_leg(base_leg_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    df = legs_store.load()
+    if df.empty:
+        raise ValueError(f"Base leg {base_leg_id} not found")
+    df["base_leg_id"] = df["base_leg_id"].astype(str)
+    mask = df["base_leg_id"] == str(base_leg_id)
+    if not mask.any():
+        raise ValueError(f"Base leg {base_leg_id} not found")
+    if "delta" in payload:
+        val = payload.get("delta")
+        try:
+            val = float(val) if val not in (None, "") else None
+        except Exception:
+            val = None
+        df.loc[mask, "delta"] = val
+    df = df.where(pd.notna(df), None)
+    legs_store.overwrite(df.to_dict("records"))
+    row = df[mask].iloc[-1].to_dict()
+    for key, val in list(row.items()):
+        if pd.isna(val):
+            row[key] = None
     return row
 
 

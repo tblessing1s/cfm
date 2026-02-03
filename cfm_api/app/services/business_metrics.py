@@ -1,7 +1,7 @@
 """Pure calculation helpers for business scoreboard metrics."""
 from __future__ import annotations
 
-from datetime import timedelta, datetime
+from datetime import timedelta, datetime, date
 import logging
 from typing import Optional, Tuple, List, Dict
 
@@ -13,6 +13,8 @@ from ..models.business import (
     BusinessDashboard,
     PositionMetrics,
     BasePosition,
+    MarkPositionRow,
+    MinimalPositionStatus,
     ShortLegSignal,
     NavPoint,
     PortfolioSummary,
@@ -21,6 +23,7 @@ from ..models.business import (
     PillarSeriesPoint,
     RegimeEntry,
     ProtectionMetrics,
+    AccountSummary,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,6 +45,130 @@ def _current_month_window() -> Tuple[pd.Timestamp, pd.Timestamp]:
     start = today.replace(day=1)
     end = (start + pd.offsets.MonthBegin(1)).normalize()
     return start, end
+
+
+def _month_window_for(day: date | datetime | pd.Timestamp) -> Tuple[pd.Timestamp, pd.Timestamp]:
+    stamp = pd.Timestamp(day).normalize()
+    start = stamp.replace(day=1)
+    end = (start + pd.offsets.MonthBegin(1)).normalize()
+    return start, end
+
+
+def compute_ticket_health(long_dte_days: Optional[int], long_delta: Optional[float]) -> str:
+    if long_dte_days is None:
+        return "B"
+    if long_dte_days >= 90:
+        runway = "STRONG"
+    elif long_dte_days >= 60:
+        runway = "MEDIUM"
+    else:
+        runway = "LOW"
+
+    if long_delta is None:
+        delta_band = "SOFT"
+    elif long_delta >= 0.85:
+        delta_band = "HEALTHY"
+    elif long_delta >= 0.75:
+        delta_band = "SOFT"
+    else:
+        delta_band = "WEAK"
+
+    if runway == "LOW" or delta_band == "WEAK":
+        return "C"
+    if runway == "STRONG" and delta_band in {"HEALTHY", "SOFT"}:
+        return "A"
+    return "B"
+
+
+def compute_conviction(market_regime: str, stock_regime: str) -> str:
+    m = _normalize_condition(market_regime)
+    s = _normalize_condition(stock_regime)
+    if not m or not s or m == "UNKNOWN" or s == "UNKNOWN":
+        return "MED"
+    if m == "RED" or s == "RED":
+        return "LOW"
+    if m == "YELLOW" or s == "YELLOW":
+        return "MED"
+    return "HIGH"
+
+
+def compute_operating_posture(conviction: str, ticket_health: str) -> str:
+    if conviction == "LOW" or ticket_health == "C":
+        return "DEFEND"
+    if conviction == "HIGH" and ticket_health in {"A", "B"}:
+        return "ATTACK"
+    return "MANAGE"
+
+
+def _select_long_leg_for_position(legs: pd.DataFrame) -> Optional[pd.Series]:
+    if legs.empty:
+        return None
+    df = legs.copy()
+    df["instrument_type_norm"] = df.get("instrument_type").fillna("").astype(str).str.upper()
+    df["side_norm"] = df.get("side").fillna("").astype(str).str.upper()
+    df["tag_norm"] = df.get("tag").fillna("").astype(str).str.upper()
+    df["base_leg_id"] = df.get("base_leg_id").fillna("").astype(str).str.strip()
+
+    option_mask = df["instrument_type_norm"].str.contains("CALL") | df["instrument_type_norm"].str.contains("OPTION")
+    candidates = df[option_mask & (df["side_norm"] == "BUY") & df.get("expiry").notna()].copy()
+    if candidates.empty:
+        return None
+
+    closed_mask = df["tag_norm"].isin({"CLOSE", "REPLACE"}) | (df["side_norm"] == "SELL")
+    closed_ids = set(df.loc[closed_mask, "base_leg_id"].dropna().astype(str).str.strip().tolist())
+    if closed_ids:
+        candidates = candidates[~candidates["base_leg_id"].isin(closed_ids)]
+    if candidates.empty:
+        return None
+
+    candidates["date"] = pd.to_datetime(candidates.get("date"), errors="coerce")
+    time_str = candidates.get("time", "").fillna("").astype(str).str.strip()
+    date_str = candidates["date"].dt.strftime("%Y-%m-%d")
+    combined = (date_str + " " + time_str).str.strip()
+    candidates["sort_ts"] = pd.to_datetime(combined, errors="coerce")
+    latest_ts = candidates["sort_ts"].max()
+    latest = candidates[candidates["sort_ts"] == latest_ts]
+    if len(latest) != 1:
+        return None
+    return latest.iloc[0]
+
+
+def _long_leg_dte_delta(legs: pd.DataFrame, today: date) -> tuple[Optional[int], Optional[float]]:
+    row = _select_long_leg_for_position(legs)
+    if row is None:
+        return None, None
+    expiry = pd.to_datetime(row.get("expiry"), errors="coerce")
+    if pd.isna(expiry):
+        return None, None
+    dte = (expiry.normalize() - pd.Timestamp(today).normalize()).days
+    delta = _to_float_or_none(row.get("delta"))
+    return int(dte), delta
+
+
+def get_net_juice_current_month_by_expiry(
+    account: Optional[str],
+    base_position_id: str,
+    today: date | datetime | pd.Timestamp | None = None,
+) -> float:
+    if not base_position_id:
+        return 0.0
+    today = pd.Timestamp(today).normalize() if today is not None else pd.Timestamp.now().normalize()
+    start, end = _month_window_for(today)
+    df = _normalize_ledger_df(excel_loader.get_ledger_rows(account))
+    if df.empty:
+        return 0.0
+    df = _ensure_signed_juice(df)
+    df = _coerce_expiry(df)
+    df = df[df.get("base_position_id").astype(str) == str(base_position_id)]
+    df = df.dropna(subset=["expiry", "signed_juice_dollars"])
+    if df.empty:
+        return 0.0
+    action = df.get("action").astype(str).str.lower()
+    df = df[action.str.contains("close", na=False)]
+    side = df.get("side").astype(str).str.upper()
+    df = df[side == "CALL"]
+    mask = (df["expiry"] >= start) & (df["expiry"] < end)
+    return float(df.loc[mask, "signed_juice_dollars"].sum())
 
 
 def _week_start(date_val: pd.Timestamp) -> pd.Timestamp:
@@ -89,6 +216,152 @@ def _latest_regime_entry(regimes: pd.DataFrame, symbol: Optional[str]) -> Dict:
         df = df.sort_values("date")
     latest = df.iloc[-1]
     return latest.to_dict()
+
+
+def _latest_regime_entry_on_or_before(regimes: pd.DataFrame, symbol: Optional[str], day: date) -> Dict:
+    if regimes.empty:
+        return {}
+    df = regimes.copy()
+    df["symbol_norm"] = df.get("symbol", "").fillna("").astype(str).str.upper()
+    key = (symbol or "").strip().upper()
+    df = df[df["symbol_norm"] == key]
+    if df.empty:
+        return {}
+    if "date" in df.columns:
+        df = df[df["date"] <= pd.Timestamp(day)]
+        if df.empty:
+            return {}
+        df = df.sort_values("date")
+    latest = df.iloc[-1]
+    return latest.to_dict()
+
+
+def _latest_market_regime(regimes: pd.DataFrame, day: date) -> Dict:
+    if regimes.empty:
+        return {}
+    df = regimes.copy()
+    if "date" in df.columns:
+        df = df[df["date"] <= pd.Timestamp(day)]
+        if df.empty:
+            return {}
+        df = df.sort_values("date")
+    df["symbol_norm"] = df.get("symbol", "").fillna("").astype(str).str.upper()
+    latest_overall = df.iloc[-1]
+    market_rows = df[df["symbol_norm"] == ""]
+    if market_rows.empty:
+        return latest_overall.to_dict()
+    latest_market = market_rows.iloc[-1]
+    # Only prefer blank-symbol market rows if they're as recent as the latest overall entry.
+    if "date" in df.columns:
+        try:
+            if pd.Timestamp(latest_market.get("date")) >= pd.Timestamp(latest_overall.get("date")):
+                return latest_market.to_dict()
+        except Exception:
+            pass
+    return latest_overall.to_dict()
+
+
+def _initial_base_cost_for_position(
+    legs: pd.DataFrame,
+    ledger_scope: Optional[pd.DataFrame],
+    open_base_leg_ids: List[str],
+) -> Optional[float]:
+    principal_cost = _initial_investment_from_marked_legs(legs)
+    if principal_cost is None and ledger_scope is not None and open_base_leg_ids:
+        principal_cost = _base_open_cost_from_ledger(ledger_scope, open_base_leg_ids)
+    if principal_cost is None and legs is not None and not legs.empty:
+        principal_cost = _base_entry_cost_from_legs(legs)
+    return float(principal_cost) if principal_cost is not None else None
+
+
+def _position_open_date_from_legs(legs: pd.DataFrame) -> Optional[pd.Timestamp]:
+    if legs.empty:
+        return None
+    scoped = legs.copy()
+    scoped["tag"] = scoped.get("tag").astype(str).str.upper()
+    opens = scoped[scoped["tag"] == "OPEN"].copy()
+    if opens.empty:
+        opens = scoped.copy()
+    opens.loc[:, "date"] = pd.to_datetime(opens.get("date"), errors="coerce")
+    opens = opens.dropna(subset=["date"])
+    if opens.empty:
+        return None
+    return opens["date"].min()
+
+
+def _net_juice_since_open(
+    ledger_df: pd.DataFrame,
+    base_position_id: str,
+    marked_base_leg_ids: List[str],
+) -> float:
+    if ledger_df.empty or not base_position_id or not marked_base_leg_ids:
+        return 0.0
+    df = ledger_df.copy()
+    df = df[df.get("base_position_id").astype(str) == str(base_position_id)]
+    if df.empty:
+        return 0.0
+    df = df[df["base_leg_id"].astype(str).isin(marked_base_leg_ids)]
+    if df.empty:
+        return 0.0
+    snapshot = _short_position_snapshot(df, defense_df=df)
+    return float(snapshot.get("short_realized_pnl") or 0.0)
+
+
+def _weekly_net_income_for_position(
+    ledger_df: pd.DataFrame,
+    base_position_id: str,
+    open_base_leg_ids: List[str],
+) -> float:
+    if ledger_df.empty or not base_position_id:
+        return 0.0
+    scoped = ledger_df[ledger_df["base_position_id"] == str(base_position_id)].copy()
+    if scoped.empty:
+        return 0.0
+    if open_base_leg_ids:
+        scoped = scoped[scoped["base_leg_id"].astype(str).isin(open_base_leg_ids)]
+    snapshot = _short_position_snapshot(scoped, defense_df=scoped)
+    weekly_locked = float(snapshot.get("weekly_locked_income") or 0.0)
+    weekly_defense = float(snapshot.get("weekly_defense_debit") or 0.0)
+    return float(round(weekly_locked - weekly_defense, 2))
+
+
+def _weekly_net_juice_by_expiry_week(
+    ledger_df: pd.DataFrame,
+    base_position_id: str,
+    week_start: pd.Timestamp,
+    week_end: pd.Timestamp,
+) -> float:
+    if ledger_df.empty or not base_position_id:
+        return 0.0
+    df = ledger_df.copy()
+    df = df[df.get("base_position_id").astype(str) == str(base_position_id)]
+    if df.empty:
+        return 0.0
+    df = _coerce_expiry(df)
+    df = df.dropna(subset=["expiry", "signed_juice_dollars"])
+    if df.empty:
+        return 0.0
+    if "action" in df.columns:
+        action = df["action"].astype(str).str.upper()
+        df = df[action.str.contains("CLOSE", na=False)]
+    if "side" in df.columns:
+        side = df["side"].astype(str).str.upper()
+        df = df[side == "CALL"]
+    expiry_mask = (df["expiry"] >= week_start) & (df["expiry"] < week_end)
+    df = df[expiry_mask]
+    if df.empty:
+        return 0.0
+    target_expiry = df["expiry"].min()
+    df = df[df["expiry"] == target_expiry]
+    gains: List[float] = []
+    for _, row in df.iterrows():
+        signed = row.get("signed_juice_dollars")
+        if signed is None or pd.isna(signed):
+            signed = _signed_juice_from_row(row)
+        if signed is None or pd.isna(signed):
+            continue
+        gains.append(-float(signed))
+    return float(sum(gains))
 
 
 def _regime_condition_series(
@@ -455,6 +728,150 @@ def _net_juice_by_expiry_window(
         return 0.0
     mask = (ledger["expiry"] >= window_start) & (ledger["expiry"] < window_end)
     return float(ledger.loc[mask, "signed_juice_dollars"].sum())
+
+
+def _normalize_strategy_label(value: object) -> str:
+    text = str(value or "").strip()
+    lowered = text.lower()
+    if "cashflow" in lowered:
+        return "CFM"
+    if "cfm" in lowered:
+        return "CFM"
+    if "juice" in lowered:
+        return "JL"
+    return text.upper() if text else ""
+
+
+def _net_juice_current_month_by_position(
+    rows: List[Dict[str, object]],
+    positions_df: Optional[pd.DataFrame],
+    today: date,
+) -> Dict[str, float]:
+    df = _normalize_ledger_df(rows)
+    if df.empty:
+        return {}
+    df = _ensure_signed_juice(df)
+    df = _coerce_expiry(df)
+    df["base_position_id"] = df.get("base_position_id").fillna("").astype(str).str.strip()
+    df = df[df["base_position_id"] != ""]
+    if "action" in df.columns:
+        action = df["action"].astype(str).str.upper()
+        df = df[action.str.contains("CLOSE", na=False)]
+    if "side" in df.columns:
+        side = df["side"].astype(str).str.upper()
+        df = df[side == "CALL"]
+
+    if positions_df is not None and not positions_df.empty:
+        positions_df = positions_df.copy()
+        positions_df["strategy_norm"] = positions_df.get("strategy").apply(_normalize_strategy_label)
+        cfm_ids = set(
+            positions_df.loc[positions_df["strategy_norm"] == "CFM", "position_id"].astype(str).str.strip().tolist()
+        )
+        if cfm_ids:
+            df = df[df["base_position_id"].isin(cfm_ids)]
+
+    start, end = _month_window_for(today)
+    df = df.dropna(subset=["expiry", "signed_juice_dollars"])
+    if df.empty:
+        return {}
+    mask = (df["expiry"] >= start) & (df["expiry"] < end)
+    df = df[mask]
+    if df.empty:
+        return {}
+    grouped = df.groupby("base_position_id")["signed_juice_dollars"].sum()
+    return {str(pid): float(val) for pid, val in grouped.items()}
+
+
+def _active_long_leg_stats(
+    legs: pd.DataFrame, today: date
+) -> Tuple[Optional[int], Optional[float], Optional[int], Optional[float], Optional[float], bool]:
+    if legs.empty:
+        return None, None, None, None, None, True
+    df = legs.copy()
+    df["instrument_type_norm"] = df.get("instrument_type").fillna("").astype(str).str.upper()
+    df["side_norm"] = df.get("side").fillna("").astype(str).str.upper()
+    df["tag_norm"] = df.get("tag").fillna("").astype(str).str.upper()
+    df["base_leg_id"] = df.get("base_leg_id").fillna("").astype(str).str.strip()
+    candidates = df[(df["side_norm"] == "BUY") & df.get("expiry").notna()].copy()
+    if candidates.empty:
+        return None, None, None, None, None, True
+
+    closed_mask = df["tag_norm"].isin({"CLOSE", "REPLACE"}) | (df["side_norm"] == "SELL")
+    closed_ids = set(df.loc[closed_mask, "base_leg_id"].dropna().astype(str).str.strip().tolist())
+    if closed_ids:
+        candidates = candidates[~candidates["base_leg_id"].isin(closed_ids)]
+    if candidates.empty:
+        return None, None, None, None, None, True
+
+    candidates["expiry"] = pd.to_datetime(candidates.get("expiry"), errors="coerce")
+    candidates = candidates.dropna(subset=["expiry"])
+    today_ts = pd.Timestamp(today).normalize()
+    candidates = candidates[candidates["expiry"].dt.normalize() >= today_ts]
+    if candidates.empty:
+        return None, None, None, None, None, True
+    dte_days = (candidates["expiry"].dt.normalize() - today_ts).dt.days
+    dte_list = [int(val) for val in dte_days.dropna().astype(int).tolist()]
+    if not dte_list:
+        return None, None, None, None, None, True
+    dte_worst = min(dte_list)
+    dte_avg = float(np.mean(dte_list)) if dte_list else None
+
+    deltas = []
+    if "delta" in candidates.columns:
+        for val in candidates["delta"].tolist():
+            parsed = _to_float_or_none(val)
+            if parsed is not None:
+                deltas.append(parsed)
+    delta_worst = min(deltas) if deltas else None
+    delta_avg = float(np.mean(deltas)) if deltas else None
+    return dte_worst, delta_worst, dte_worst, dte_avg, delta_avg, False
+
+
+def _strength_status(
+    stock_regime: Optional[str],
+    long_dte_days: Optional[int],
+    long_delta: Optional[float],
+    ambiguous: bool,
+) -> str:
+    regime = _normalize_condition(stock_regime)
+    if ambiguous or not regime:
+        return "Watch"
+    if long_dte_days is None:
+        return "Watch"
+    if long_dte_days >= 90:
+        runway = "STRONG"
+    elif long_dte_days >= 60:
+        runway = "MEDIUM"
+    else:
+        runway = "LOW"
+
+    delta_healthy = None
+    if long_delta is not None:
+        delta_healthy = long_delta >= 0.85
+
+    if regime == "GREEN":
+        if runway == "STRONG":
+            return "Healthy"
+        if runway == "MEDIUM":
+            if delta_healthy is False:
+                return "Watch"
+            return "Healthy"
+        return "Weak"
+    if regime == "YELLOW":
+        if runway == "STRONG" and delta_healthy is not False:
+            return "Healthy"
+        if runway == "MEDIUM":
+            return "Watch"
+        return "Weak"
+    if regime == "RED":
+        if runway == "STRONG" and delta_healthy is True:
+            return "Healthy"
+        if runway == "STRONG" and delta_healthy is False:
+            return "Watch"
+        if runway == "MEDIUM" and delta_healthy is True:
+            return "Watch"
+        return "Weak"
+    return "Watch"
 
 
 DEFAULT_RESERVE_PCT = 0.05
@@ -1023,6 +1440,17 @@ def _filter_ledger_scope(
             scoped = df[df["base_leg_id"].astype(str).str.strip().str.lower().isin(ids)]
             if not scoped.empty:
                 return scoped
+    if base_position_ids and "base_position_id" in df.columns:
+        ids = {str(val).strip() for val in base_position_ids if val}
+        if ids:
+            scoped = df[df["base_position_id"].astype(str).str.strip().isin(ids)]
+            if not scoped.empty:
+                return scoped
+    if ticker and "ticker" in df.columns:
+        df["ticker"] = df.get("ticker").astype(str).str.upper()
+        scoped = df[df["ticker"] == ticker.upper()]
+        if not scoped.empty:
+            return scoped
     return df.iloc[0:0]
 
 
@@ -1211,12 +1639,25 @@ def _normalize_ledger_df(rows: List[Dict[str, object]]) -> pd.DataFrame:
         df["base_leg_id"] = df.get("base_leg_id").astype(str)
     else:
         df["base_leg_id"] = ""
+    if "key" in df.columns:
+        df["key"] = df.get("key").fillna("").astype(str)
+    else:
+        df["key"] = ""
     df["order"] = df["row_number"]
     missing = df["order"].isna()
     if missing.any():
         date_order = pd.to_datetime(df.loc[missing, "date"], errors="coerce").view("int64")
         df.loc[missing, "order"] = date_order
     return df
+
+
+def _normalize_short_key(raw_key: str) -> str:
+    if not raw_key:
+        return ""
+    parts = [part.strip().upper() for part in raw_key.split("|") if part.strip()]
+    while parts and parts[-1] in {"OPEN", "CLOSE", "MARK"}:
+        parts.pop()
+    return "|".join(parts)
 
 
 def _short_pair_key(row: pd.Series) -> str:
@@ -1230,14 +1671,33 @@ def _short_pair_key(row: pd.Series) -> str:
         expiry_str = expiry.date().isoformat()
     base_leg_id = str(row.get("base_leg_id") or "").strip()
     base_position_id = str(row.get("base_position_id") or "").strip()
+    raw_key = _normalize_short_key(str(row.get("key") or "").strip())
     anchor = base_leg_id or base_position_id
+    if raw_key:
+        return f"{raw_key}|{anchor}"
     return f"{ticker}|{side}|{strike_str}|{expiry_str}|{anchor}"
 
 
-def _short_instances_for_position(df: pd.DataFrame) -> Tuple[List[Dict[str, object]], List[Dict[str, object]]]:
+def _filter_ledger_as_of(df: pd.DataFrame, as_of: Optional[pd.Timestamp]) -> pd.DataFrame:
+    if df.empty or as_of is None:
+        return df
+    cutoff = pd.to_datetime(as_of, errors="coerce")
+    if pd.isna(cutoff):
+        return df
+    if "date" not in df.columns:
+        return df
+    mask = df["date"].isna() | (df["date"] <= cutoff)
+    return df[mask]
+
+
+def _short_instances_for_position(
+    df: pd.DataFrame,
+    as_of: Optional[pd.Timestamp] = None,
+) -> Tuple[List[Dict[str, object]], List[Dict[str, object]]]:
     if df.empty:
         return [], []
     working = df.copy()
+    working = _filter_ledger_as_of(working, as_of)
     working = working[working["action"].isin({"OPEN", "CLOSE", "MARK"})]
     working["side"] = working.get("side").astype(str).str.upper()
     working = working[working["side"].isin({"CALL", "PUT"})]
@@ -1253,6 +1713,7 @@ def _short_instances_for_position(df: pd.DataFrame) -> Tuple[List[Dict[str, obje
         opens = group[group["action"] == "OPEN"].sort_values(["order", "row_number"], na_position="last")
         closes = group[group["action"] == "CLOSE"].sort_values(["order", "row_number"], na_position="last")
         marks = group[group["action"] == "MARK"].sort_values(["order", "row_number"], na_position="last")
+        closed_open_ids: set[object] = set()
         close_idx = 0
         for _, open_row in opens.iterrows():
             open_order = open_row.get("order")
@@ -1272,20 +1733,37 @@ def _short_instances_for_position(df: pd.DataFrame) -> Tuple[List[Dict[str, obje
                         "close": close_row.to_dict(),
                     }
                 )
+                closed_open_ids.add(open_row.name)
                 continue
-            mark_row = None
-            if not marks.empty:
-                later_marks = marks
-                if open_order is not None and pd.notna(open_order):
-                    later_marks = marks[marks["order"] >= open_order]
-                    if later_marks.empty:
-                        later_marks = marks
-                mark_row = later_marks.iloc[-1].to_dict()
+        used_open_ids: set[object] = set()
+        if not marks.empty:
+            for _, mark_row in marks.iterrows():
+                mark_order = mark_row.get("order")
+                open_row = None
+                if not opens.empty:
+                    candidates = opens
+                    if mark_order is not None and pd.notna(mark_order):
+                        candidates = opens[opens["order"] <= mark_order]
+                        if candidates.empty:
+                            candidates = opens
+                    open_row = candidates.iloc[-1]
+                    used_open_ids.add(open_row.name)
+                open_instances.append(
+                    {
+                        "pair_key": key,
+                        "open": open_row.to_dict() if open_row is not None else None,
+                        "mark": mark_row.to_dict(),
+                    }
+                )
+        for _, open_row in opens.iterrows():
+            open_id = open_row.name
+            if open_id in closed_open_ids or open_id in used_open_ids:
+                continue
             open_instances.append(
                 {
                     "pair_key": key,
                     "open": open_row.to_dict(),
-                    "mark": mark_row,
+                    "mark": None,
                 }
             )
     return open_instances, closed_instances
@@ -1313,25 +1791,33 @@ def _defense_debits_for_position(
     df: pd.DataFrame,
     closed_instances: List[Dict[str, object]],
     max_gap: int = 5,
-) -> Tuple[List[float], Optional[float], Optional[float]]:
+    week_bounds: Optional[Tuple[pd.Timestamp, pd.Timestamp]] = None,
+) -> Tuple[List[float], Optional[float], Optional[float], float]:
     if df.empty:
-        return [], None, None
+        return [], None, None, 0.0
     closes = df[df["action"] == "CLOSE"].sort_values(["order", "row_number"], na_position="last")
     opens = df[df["action"] == "OPEN"].sort_values(["order", "row_number"], na_position="last")
     if closes.empty:
-        return [], None, None
+        return [], None, None, 0.0
 
     open_by_close: Dict[object, Dict[str, object]] = {}
+    open_by_key: Dict[str, Dict[str, object]] = {}
     for inst in closed_instances:
         close_row = inst.get("close")
         open_row = inst.get("open")
         if isinstance(close_row, dict) and isinstance(open_row, dict):
             key = close_row.get("row_number") or close_row.get("order")
             open_by_close[key] = open_row
+            key_val = str(close_row.get("key") or "").strip()
+            if key_val:
+                open_by_key[key_val] = open_row
 
     events: List[Tuple[float, float]] = []
+    weekly_total = 0.0
+    week_start, week_end = week_bounds or _current_week_window()
 
     for _, close_row in closes.iterrows():
+        key_val = str(close_row.get("key") or "").strip()
         close_order = close_row.get("order")
         close_row_number = close_row.get("row_number")
         close_premium = _to_float_or_none(close_row.get("premium_buyback"))
@@ -1340,32 +1826,35 @@ def _defense_debits_for_position(
             continue
 
         cond = _normalize_condition(close_row.get("condition_norm") or close_row.get("condition") or "")
+        has_condition = bool(cond)
         is_defense_tag = "DEFENSE" in cond
         is_income_tag = "INCOME" in cond
-        is_roll_tag = "ROLL" in cond
 
         roll_open = None
         if not opens.empty:
             subset = opens
             if "base_position_id" in opens.columns:
                 subset = subset[opens["base_position_id"] == close_row.get("base_position_id")]
+            if "account" in opens.columns:
+                subset = subset[opens["account"] == close_row.get("account")]
             subset = subset[subset["ticker"] == close_row.get("ticker")]
-            subset = subset[subset["side"] == close_row.get("side")]
+            subset = subset[subset["side"] == "CALL"]
             if close_row_number is not None and pd.notna(close_row_number):
                 subset = subset[subset["row_number"] > close_row_number]
-                if not subset.empty:
-                    candidate = subset.iloc[0]
+            elif close_order is not None and pd.notna(close_order):
+                subset = subset[subset["order"] > close_order]
+            if not subset.empty:
+                candidate = subset.iloc[0]
+                gap = None
+                if close_row_number is not None and pd.notna(close_row_number):
                     gap = candidate.get("row_number") - close_row_number
-                    if is_roll_tag or (gap is not None and gap <= max_gap):
-                        roll_open = candidate.to_dict()
-            else:
                 close_date = close_row.get("date")
-                if pd.notna(close_date):
-                    subset = subset[subset["date"] >= close_date]
-                    if not subset.empty:
-                        candidate = subset.iloc[0]
-                        if is_roll_tag or (candidate.get("date") - close_date).days <= 1:
-                            roll_open = candidate.to_dict()
+                open_date = candidate.get("date")
+                date_ok = True
+                if pd.notna(close_date) and pd.notna(open_date):
+                    date_ok = (open_date.date() == close_date.date()) or ((open_date - close_date).days <= 1)
+                if (gap is None or gap <= max_gap) and date_ok:
+                    roll_open = candidate.to_dict()
 
         debit_total = None
         if roll_open:
@@ -1373,7 +1862,12 @@ def _defense_debits_for_position(
             if open_credit is not None:
                 debit_total = max(0.0, (close_premium - open_credit) * close_contracts * CONTRACT_MULTIPLIER)
         else:
-            open_row = open_by_close.get(close_row_number or close_order)
+            open_row = None
+            key_val = str(close_row.get("key") or "").strip()
+            if key_val:
+                open_row = open_by_key.get(key_val)
+            if open_row is None:
+                open_row = open_by_close.get(close_row_number or close_order)
             if open_row:
                 open_credit = _to_float_or_none(open_row.get("premium_buyback"))
                 if open_credit is not None:
@@ -1383,29 +1877,38 @@ def _defense_debits_for_position(
             continue
 
         realized_pnl = None
-        open_row = open_by_close.get(close_row_number or close_order)
+        open_row = None
+        if key_val:
+            open_row = open_by_key.get(key_val)
+        if open_row is None:
+            open_row = open_by_close.get(close_row_number or close_order)
         if open_row:
             open_credit = _to_float_or_none(open_row.get("premium_buyback"))
             if open_credit is not None:
                 realized_pnl = (open_credit - close_premium) * close_contracts * CONTRACT_MULTIPLIER
 
         is_defense = False
-        if is_defense_tag:
-            is_defense = True
-        elif is_income_tag:
-            is_defense = False
-        elif roll_open and debit_total > 0:
-            is_defense = True
-        elif realized_pnl is not None and realized_pnl < 0:
-            is_defense = True
+        if has_condition:
+            if is_income_tag:
+                is_defense = False
+            else:
+                is_defense = is_defense_tag
+        else:
+            if roll_open and debit_total > 0:
+                is_defense = True
+            elif realized_pnl is not None and realized_pnl < 0:
+                is_defense = True
 
         if is_defense:
             per_contract = debit_total / close_contracts if close_contracts else 0.0
             order_val = _to_float_or_none(close_order) or 0.0
             events.append((order_val, per_contract))
+            close_date = pd.to_datetime(close_row.get("date"), errors="coerce")
+            if pd.notna(close_date) and week_start <= close_date < week_end:
+                weekly_total += debit_total
 
     if not events:
-        return [], None, None
+        return [], None, None, float(round(weekly_total, 2))
 
     events_sorted = sorted(events, key=lambda item: item[0])
     last10 = [item[1] for item in events_sorted[-10:]]
@@ -1415,7 +1918,7 @@ def _defense_debits_for_position(
         debit_cap = None
     else:
         debit_cap = max(avg_dd * 1.5, p90 or 0.0)
-    return last10, avg_dd, debit_cap
+    return last10, avg_dd, debit_cap, float(round(weekly_total, 2))
 
 
 def _latest_stock_closes(symbol: str) -> Tuple[Optional[float], Optional[float]]:
@@ -1432,15 +1935,21 @@ def _latest_stock_closes(symbol: str) -> Tuple[Optional[float], Optional[float]]
     return close_today, close_yesterday
 
 
-def _short_position_snapshot(df: pd.DataFrame) -> Dict[str, object]:
-    open_instances, closed_instances = _short_instances_for_position(df)
-    week_start, week_end = _current_week_window()
+def _short_position_snapshot(
+    df: pd.DataFrame,
+    as_of: Optional[pd.Timestamp] = None,
+    week_bounds: Optional[Tuple[pd.Timestamp, pd.Timestamp]] = None,
+    defense_df: Optional[pd.DataFrame] = None,
+) -> Dict[str, object]:
+    open_instances, closed_instances = _short_instances_for_position(df, as_of=as_of)
+    week_start, week_end = week_bounds or _current_week_window()
     realized_total = 0.0
     unrealized_total = 0.0
     working_juice = 0.0
     locked_juice = 0.0
     weekly_locked = 0.0
     open_short_contracts = 0.0
+    capture_pcts: List[float] = []
 
     for inst in closed_instances:
         open_row = inst.get("open") if isinstance(inst.get("open"), dict) else None
@@ -1475,10 +1984,12 @@ def _short_position_snapshot(df: pd.DataFrame) -> Dict[str, object]:
     for inst in open_instances:
         open_row = inst.get("open") if isinstance(inst.get("open"), dict) else None
         mark_row = inst.get("mark") if isinstance(inst.get("mark"), dict) else None
-        if not open_row:
+        if not mark_row:
             continue
-        credit_open = _to_float_or_none(open_row.get("premium_buyback"))
-        contracts = _instance_contracts(inst)
+        contracts = _to_float_or_none(mark_row.get("contracts")) or _instance_contracts(inst)
+        if contracts:
+            open_short_contracts += contracts
+        credit_open = _to_float_or_none(open_row.get("premium_buyback")) if open_row else None
         if credit_open is None or not contracts:
             continue
         if credit_open < 0:
@@ -1488,11 +1999,10 @@ def _short_position_snapshot(df: pd.DataFrame) -> Dict[str, object]:
             continue
         pnl = (credit_open - mark_premium) * contracts * CONTRACT_MULTIPLIER
         unrealized_total += pnl
-        open_short_contracts += contracts
 
-        side = str(open_row.get("side") or "").upper()
-        strike = _to_float_or_none(open_row.get("strike"))
-        underlying_open = _to_float_or_none(open_row.get("underlying"))
+        side = str((open_row or mark_row).get("side") or "").upper()
+        strike = _to_float_or_none((open_row or mark_row).get("strike"))
+        underlying_open = _to_float_or_none(open_row.get("underlying")) if open_row else None
         underlying_mark = _to_float_or_none(mark_row.get("underlying")) if mark_row else None
         intrinsic_open = _intrinsic_per_contract(underlying_open, strike, side)
         intrinsic_now = _intrinsic_per_contract(underlying_mark, strike, side) if underlying_mark is not None else None
@@ -1501,9 +2011,17 @@ def _short_position_snapshot(df: pd.DataFrame) -> Dict[str, object]:
         extrinsic_open = credit_open - intrinsic_open
         extrinsic_now = mark_premium - intrinsic_now
         working_juice += (extrinsic_open - extrinsic_now) * contracts * CONTRACT_MULTIPLIER
+        if extrinsic_open:
+            capture_pcts.append((extrinsic_open - extrinsic_now) / extrinsic_open)
 
-    last10, avg_dd, debit_cap = _defense_debits_for_position(df, closed_instances)
+    defense_scope = defense_df if defense_df is not None else df
+    last10, avg_dd, debit_cap, weekly_defense = _defense_debits_for_position(
+        defense_scope,
+        closed_instances,
+        week_bounds=week_bounds,
+    )
     safety_reserve = (debit_cap or 0.0) * open_short_contracts if open_short_contracts else 0.0
+    avg_capture_pct = float(np.mean(capture_pcts)) if capture_pcts else None
 
     return {
         "open_instances": open_instances,
@@ -1513,12 +2031,163 @@ def _short_position_snapshot(df: pd.DataFrame) -> Dict[str, object]:
         "working_juice": float(round(working_juice, 2)),
         "locked_juice": float(round(locked_juice, 2)),
         "weekly_locked_income": float(round(weekly_locked, 2)),
+        "weekly_defense_debit": float(round(weekly_defense, 2)),
         "open_short_contracts": float(round(open_short_contracts, 2)) if open_short_contracts else 0.0,
         "last10_defense_debits": [float(round(val, 4)) for val in last10],
         "avg_defense_debit": _clean_number(avg_dd),
         "debit_cap": _clean_number(debit_cap),
         "safety_reserve": float(round(safety_reserve, 2)) if safety_reserve else 0.0,
+        "avg_capture_pct": _clean_number(avg_capture_pct),
     }
+
+
+def _base_leg_ids_from_legs(legs: pd.DataFrame) -> List[str]:
+    if legs.empty or "base_leg_id" not in legs.columns:
+        return []
+    ids = legs["base_leg_id"].astype(str).str.strip()
+    return [val for val in ids.tolist() if val]
+
+
+def _open_base_leg_ids_from_ledger(df: pd.DataFrame) -> List[str]:
+    if df.empty or "base_leg_id" not in df.columns:
+        return []
+    marks = df[df["action"] == "MARK"]
+    if marks.empty:
+        return []
+    ids = marks["base_leg_id"].astype(str).str.strip()
+    return [val for val in ids.tolist() if val]
+
+
+def _base_open_cost_from_ledger(df: pd.DataFrame, base_leg_ids: List[str]) -> Optional[float]:
+    if df.empty or not base_leg_ids:
+        return None
+    subset = df[(df["action"] == "OPEN") & (df["base_leg_id"].isin(base_leg_ids))]
+    if "key" in subset.columns:
+        subset = subset[subset["key"].astype(str).str.strip() == ""]
+    if subset.empty:
+        return None
+    subset = subset.dropna(subset=["premium_buyback", "contracts"])
+    if subset.empty:
+        return None
+    cost = (subset["premium_buyback"].abs() * subset["contracts"] * CONTRACT_MULTIPLIER).sum()
+    return float(cost) if pd.notna(cost) else None
+
+
+def _base_mark_value_from_ledger(
+    df: pd.DataFrame,
+    base_leg_ids: List[str],
+    as_of: Optional[pd.Timestamp] = None,
+) -> Optional[float]:
+    if df.empty or not base_leg_ids:
+        return None
+    subset = df[(df["action"] == "MARK") & (df["base_leg_id"].isin(base_leg_ids))]
+    if "key" in subset.columns:
+        subset = subset[subset["key"].astype(str).str.strip() == ""]
+    subset = _filter_ledger_as_of(subset, as_of)
+    if subset.empty:
+        return None
+    subset = subset.dropna(subset=["premium_buyback", "contracts"])
+    if subset.empty:
+        return None
+    if "row_number" in subset.columns and subset["row_number"].notna().any():
+        subset = subset.sort_values("row_number")
+    elif "date" in subset.columns:
+        subset = subset.sort_values("date")
+    latest = subset.groupby("base_leg_id", dropna=False).tail(1)
+    value = (latest["premium_buyback"].abs() * latest["contracts"] * CONTRACT_MULTIPLIER).sum()
+    return float(value) if pd.notna(value) else None
+
+
+def _position_layer_snapshot(
+    ledger_df: pd.DataFrame,
+    base_leg_ids: List[str],
+    principal_cost: Optional[float],
+    long_value_fallback: Optional[float],
+    as_of: Optional[pd.Timestamp] = None,
+    week_bounds: Optional[Tuple[pd.Timestamp, pd.Timestamp]] = None,
+) -> Dict[str, object]:
+    short_snapshot = _short_position_snapshot(ledger_df, as_of=as_of, week_bounds=week_bounds)
+    principal = principal_cost if principal_cost is not None else _base_open_cost_from_ledger(ledger_df, base_leg_ids)
+    if long_value_fallback is not None:
+        long_value = long_value_fallback
+    else:
+        long_value = _base_mark_value_from_ledger(ledger_df, base_leg_ids, as_of=as_of)
+    short_realized = float(short_snapshot.get("short_realized_pnl") or 0.0)
+    short_unrealized = float(short_snapshot.get("short_unrealized_pnl") or 0.0)
+    # Liquidation = long MTM + realized short + unrealized short.
+    liquidation_value = (long_value or 0.0) + short_realized + short_unrealized
+    cushion = liquidation_value - (principal or 0.0)
+    safety_reserve = float(short_snapshot.get("safety_reserve") or 0.0)
+    withdrawable_now = max(0.0, cushion - safety_reserve)
+    protected_now = None if not principal else (liquidation_value >= principal)
+    return {
+        "principal_cost": principal,
+        "long_value_now": long_value,
+        "short_snapshot": short_snapshot,
+        "short_realized_pnl": short_realized,
+        "short_unrealized_pnl": short_unrealized,
+        "liquidation_value": liquidation_value,
+        "cushion": cushion,
+        "safety_reserve": safety_reserve,
+        "withdrawable_now": withdrawable_now,
+        "protected_now": protected_now,
+    }
+
+
+def _maturity_flags_for_position(
+    ledger_df: pd.DataFrame,
+    base_leg_ids: List[str],
+    principal_cost: Optional[float],
+    long_value_fallback: Optional[float],
+    weeks: int = 6,
+) -> List[bool]:
+    anchor = pd.Timestamp.now().normalize()
+    flags: List[bool] = []
+    for offset in range(weeks):
+        week_anchor = anchor - pd.Timedelta(days=7 * offset)
+        week_start, week_end = _week_bounds(week_anchor)
+        as_of = week_end - pd.Timedelta(seconds=1)
+        snapshot = _position_layer_snapshot(
+            ledger_df,
+            base_leg_ids,
+            principal_cost,
+            long_value_fallback,
+            as_of=as_of,
+            week_bounds=(week_start, week_end),
+        )
+        cushion = snapshot.get("cushion") or 0.0
+        safety = snapshot.get("safety_reserve") or 0.0
+        flags.append(cushion >= (2.0 * safety))
+    return flags
+
+
+def _account_maturity_flags(
+    position_inputs: List[Dict[str, object]],
+    weeks: int = 6,
+) -> List[bool]:
+    if not position_inputs:
+        return []
+    anchor = pd.Timestamp.now().normalize()
+    flags: List[bool] = []
+    for offset in range(weeks):
+        week_anchor = anchor - pd.Timedelta(days=7 * offset)
+        week_start, week_end = _week_bounds(week_anchor)
+        as_of = week_end - pd.Timedelta(seconds=1)
+        account_cushion = 0.0
+        account_safety = 0.0
+        for info in position_inputs:
+            snapshot = _position_layer_snapshot(
+                info["ledger_df"],
+                info["base_leg_ids"],
+                info["principal_cost"],
+                info["long_value_fallback"],
+                as_of=as_of,
+                week_bounds=(week_start, week_end),
+            )
+            account_cushion += snapshot.get("cushion") or 0.0
+            account_safety += snapshot.get("safety_reserve") or 0.0
+        flags.append(account_cushion >= (2.0 * account_safety))
+    return flags
 
 
 def _short_signals_for_position(
@@ -1526,37 +2195,58 @@ def _short_signals_for_position(
     symbol: str,
     cushion: float,
     safety_reserve: float,
-) -> Tuple[List[ShortLegSignal], bool, bool, bool, Optional[str]]:
+    plan_settings: Dict[str, float | int],
+    regime_condition: str,
+    breaker_status: str,
+) -> Tuple[List[ShortLegSignal], bool, bool, bool, Optional[str], Optional[str], Optional[str]]:
     close_today, close_yesterday = _latest_stock_closes(symbol)
     emergency = safety_reserve > 0 and cushion < (0.5 * safety_reserve)
     signals: List[ShortLegSignal] = []
     income_roll = False
     protection_roll = False
 
+    capture_target = float(plan_settings.get("capture_target_pct", 0.70))
+    min_dte = int(plan_settings.get("min_dte_to_roll", 3))
+    cheap_buyback = float(plan_settings.get("cheap_buyback_threshold", 0.30))
+
+    primary_open = None
+    primary_mark = None
+    primary_expiry = None
+
     for inst in open_instances:
         open_row = inst.get("open") if isinstance(inst.get("open"), dict) else None
         mark_row = inst.get("mark") if isinstance(inst.get("mark"), dict) else None
         if not open_row:
             continue
-        strike = _to_float_or_none(open_row.get("strike"))
         expiry = open_row.get("expiry")
         if isinstance(expiry, str):
             expiry = pd.to_datetime(expiry, errors="coerce")
+        if primary_open is None:
+            primary_open = open_row
+            primary_mark = mark_row
+            primary_expiry = expiry
+        elif isinstance(expiry, pd.Timestamp) and isinstance(primary_expiry, pd.Timestamp):
+            if expiry < primary_expiry:
+                primary_open = open_row
+                primary_mark = mark_row
+                primary_expiry = expiry
+
+        strike = _to_float_or_none(open_row.get("strike"))
         side = str(open_row.get("side") or "").upper()
         contracts = _to_float_or_none(open_row.get("contracts"))
-        credit_open = _to_float_or_none(open_row.get("premium_buyback"))
-        mark_premium = _to_float_or_none(mark_row.get("premium_buyback")) if mark_row else credit_open
+        entry_credit = _to_float_or_none(open_row.get("premium_buyback"))
+        current_buyback = _to_float_or_none(mark_row.get("premium_buyback")) if mark_row else None
         underlying_now = _to_float_or_none(mark_row.get("underlying")) if mark_row else _to_float_or_none(open_row.get("underlying"))
         intrinsic_open = _intrinsic_per_contract(_to_float_or_none(open_row.get("underlying")), strike, side)
         intrinsic_now = _intrinsic_per_contract(underlying_now, strike, side)
         extrinsic_now = None
         capture_pct = None
-        if credit_open is not None and mark_premium is not None and intrinsic_open is not None and intrinsic_now is not None:
-            extrinsic_open = credit_open - intrinsic_open
-            extrinsic_now = mark_premium - intrinsic_now
-            denom = extrinsic_open if extrinsic_open not in (None, 0) else None
-            if denom:
-                capture_pct = (extrinsic_open - extrinsic_now) / denom
+        if entry_credit is not None and intrinsic_open is not None:
+            extrinsic_open = entry_credit - intrinsic_open
+            if current_buyback is not None and entry_credit:
+                capture_pct = (entry_credit - current_buyback) / entry_credit
+            if current_buyback is not None and intrinsic_now is not None:
+                extrinsic_now = current_buyback - intrinsic_now
 
         dte = None
         if isinstance(expiry, pd.Timestamp) and not pd.isna(expiry):
@@ -1566,25 +2256,24 @@ def _short_signals_for_position(
         if underlying_now is not None and strike is not None and underlying_now:
             near_atm = abs(float(underlying_now) - float(strike)) / float(underlying_now) <= 0.01
 
-        income_flag = bool(
-            (capture_pct is not None and capture_pct >= 0.70)
-            or (extrinsic_now is not None and extrinsic_now <= 0.15)
-            or (dte is not None and dte <= 2)
+        roll_eligible = bool(
+            capture_pct is not None
+            and capture_pct >= capture_target
+            and dte is not None
+            and dte >= min_dte
         )
+        income_flag = roll_eligible or (current_buyback is not None and current_buyback <= cheap_buyback)
         income_roll = income_roll or income_flag
 
-        close_price = close_today if close_today is not None else underlying_now
+        close_price = close_today if close_today is not None else None
         buffer_val = 0.01 * close_price if close_price is not None else None
         trigger = False
         confirm_down = False
-        if buffer_val is not None and strike is not None and close_price is not None:
+        if buffer_val is not None and strike is not None and close_price is not None and close_yesterday is not None:
             trigger = close_price < (float(strike) - buffer_val)
-            if close_yesterday is not None:
-                confirm_down = (close_price < (float(strike) - buffer_val)) and (close_yesterday < (float(strike) - buffer_val))
-            else:
-                confirm_down = trigger
+            confirm_down = (close_price < (float(strike) - buffer_val)) and (close_yesterday < (float(strike) - buffer_val))
         protection_trigger = (cushion < safety_reserve) or trigger
-        protection_flag = protection_trigger and (confirm_down or emergency)
+        protection_flag = protection_trigger and (confirm_down or emergency or (close_today is None))
         protection_roll = protection_roll or protection_flag
 
         signals.append(
@@ -1603,17 +2292,58 @@ def _short_signals_for_position(
             )
         )
 
-    recommended = None
-    if emergency:
-        recommended = "PROTECTION ROLL NOW"
-    elif protection_roll:
-        recommended = "PROTECTION ROLL"
-    elif income_roll:
-        recommended = "INCOME ROLL / CLOSE"
-    else:
-        recommended = "HOLD"
+    recommended = "HOLD"
+    rule_triggered = "HOLD"
+    explanation = "Hold current position."
 
-    return signals, income_roll, protection_roll, emergency, recommended
+    if breaker_status == "ExitNow":
+        return signals, income_roll, protection_roll, emergency, "EXIT_NOW", "BREAKER_EXIT_NOW", "Circuit breaker signals exit now."
+    if breaker_status == "ExitCandidate":
+        return signals, income_roll, protection_roll, emergency, "EXIT_CANDIDATE", "BREAKER_EXIT_CANDIDATE", "Circuit breaker elevates exit readiness."
+
+    primary_open = primary_open or (open_instances[0].get("open") if open_instances else None)
+    primary_mark = primary_mark or (open_instances[0].get("mark") if open_instances else None)
+    entry_credit = _to_float_or_none(primary_open.get("premium_buyback")) if isinstance(primary_open, dict) else None
+    current_buyback = _to_float_or_none(primary_mark.get("premium_buyback")) if isinstance(primary_mark, dict) else None
+    current_price = _to_float_or_none(primary_mark.get("underlying")) if isinstance(primary_mark, dict) else None
+    if current_price is None:
+        current_price = close_today
+
+    roll_eligible = False
+    capture_pct = None
+    dte = None
+    if isinstance(primary_expiry, pd.Timestamp) and not pd.isna(primary_expiry):
+        dte = (primary_expiry.normalize() - pd.Timestamp.now().normalize()).days
+    if entry_credit is not None and current_buyback is not None and entry_credit:
+        capture_pct = (entry_credit - current_buyback) / entry_credit
+        roll_eligible = capture_pct >= capture_target and (dte is not None and dte >= min_dte)
+
+    if roll_eligible:
+        pct = int(round(capture_pct * 100)) if capture_pct is not None else 0
+        return signals, income_roll, protection_roll, emergency, "ROLL_EARLY", f"ROLL_EARLY_CAPTURE_{pct}", "Credit capture meets target and DTE gate."
+
+    if regime_condition == "YELLOW":
+        if current_price is None or not isinstance(primary_open, dict):
+            return signals, income_roll, protection_roll, emergency, "UNKNOWN_PRICE", "UNKNOWN_PRICE", "No current price available to evaluate yellow band."
+        strike = _to_float_or_none(primary_open.get("strike"))
+        underlying_entry = _to_float_or_none(primary_open.get("underlying"))
+        side = str(primary_open.get("side") or "").upper()
+        if strike is None or underlying_entry is None or "CALL" not in side:
+            return signals, income_roll, protection_roll, emergency, "UNKNOWN_PRICE", "UNKNOWN_PRICE", "Missing entry inputs for yellow band."
+        intrinsic_entry = max(0.0, float(underlying_entry) - float(strike))
+        e0 = (entry_credit or 0.0) - intrinsic_entry
+        otm_floor = float(strike) - float(e0)
+        if current_price < otm_floor:
+            return signals, income_roll, protection_roll, emergency, "RECENTER_REQUIRED", "YELLOW_FLOOR_BREACH", "Price broke the yellow E0 floor; recenter required."
+        return signals, income_roll, protection_roll, emergency, "HANG_BY_JUICE", "YELLOW_HANG_OK", "Price holds above yellow E0 floor; hang by juice."
+
+    if regime_condition == "RED":
+        return signals, income_roll, protection_roll, emergency, "RECOVER_BASE", "RED_ATM_FLOOR", "Red regime: prioritize base recovery and exit readiness."
+
+    if regime_condition == "GREEN":
+        return signals, income_roll, protection_roll, emergency, "ALLOW_OTM_DRIFT", "GREEN_ALLOW_DRIFT", "Green regime: allow OTM drift and manage normally."
+
+    return signals, income_roll, protection_roll, emergency, recommended, rule_triggered, explanation
 
 
 def _condition_from_score(score: int) -> str:
@@ -1705,6 +2435,7 @@ def _income_series_by_week(account: Optional[str], symbol: Optional[str] = None,
         PillarSeriesPoint(period_start=row["period_start"], value=float(row["signed_juice_dollars"]))
         for _, row in grouped.iterrows()
     ]
+
 
 
 def _base_strength_series_placeholder(base_strength: Optional[float]) -> List[PillarSeriesPoint]:
@@ -1962,6 +2693,41 @@ def _base_entry_cost_from_legs(legs: pd.DataFrame) -> float:
     return float(round(total, 2))
 
 
+def _initial_investment_from_marked_legs(legs: pd.DataFrame) -> Optional[float]:
+    """Sum OPEN amounts for base_leg_ids that have a MARK tag."""
+    if legs.empty or "base_leg_id" not in legs.columns or "tag" not in legs.columns:
+        return None
+    marks = legs[legs["tag"].astype(str).str.upper() == "MARK"]
+    if marks.empty:
+        return None
+    marked_ids = marks["base_leg_id"].dropna().astype(str).str.strip().unique().tolist()
+    if not marked_ids:
+        return None
+    opens = legs[
+        (legs["tag"].astype(str).str.upper() == "OPEN")
+        & (legs["base_leg_id"].astype(str).str.strip().isin(marked_ids))
+    ].copy()
+    if opens.empty:
+        return None
+    opens["amount"] = pd.to_numeric(opens.get("amount"), errors="coerce")
+    total = opens["amount"].abs().sum()
+    return float(round(total, 2)) if pd.notna(total) else None
+
+
+def _base_mark_value_from_legs(legs: pd.DataFrame, base_leg_ids: List[str]) -> Optional[float]:
+    if legs.empty or not base_leg_ids:
+        return None
+    marks = legs[
+        (legs["tag"].astype(str).str.upper() == "MARK")
+        & (legs["base_leg_id"].astype(str).str.strip().isin(base_leg_ids))
+    ].copy()
+    if marks.empty:
+        return None
+    marks["amount"] = pd.to_numeric(marks.get("amount"), errors="coerce")
+    total = marks["amount"].abs().sum()
+    return float(round(total, 2)) if pd.notna(total) else None
+
+
 def _initial_benchmark_cost(legs: pd.DataFrame, repl_rows: pd.DataFrame, base_value: float) -> float:
     """Derive the initial benchmark replacement cost (entry cost)."""
     # Prefer explicitly stored replacement cost (earliest)
@@ -2030,6 +2796,8 @@ def position_metrics(
     positions_df = business_loader.list_positions(account)
     reserves_df = business_loader.list_reserves()
     repl_df = business_loader.list_replacement_costs()
+    regimes_df = business_loader.list_regimes()
+    breaker_inputs = business_loader.list_circuit_breakers()
     ledger_df = _normalize_ledger_df(excel_loader.get_ledger_rows(account))
     snapshot_date = pd.Timestamp.now().normalize().date()
     results: List[PositionMetrics] = []
@@ -2043,6 +2811,8 @@ def position_metrics(
         pid = pos["position_id"]
         legs = business_loader.list_base_legs(pid)
         open_leg_ids = _open_base_leg_ids(legs)
+        if not open_leg_ids:
+            open_leg_ids = _marked_base_leg_ids(legs)
         open_legs = legs
         has_leg_ids = "base_leg_id" in legs.columns and legs["base_leg_id"].astype(str).str.strip().ne("").any()
         if has_leg_ids:
@@ -2062,6 +2832,7 @@ def position_metrics(
         net_juice_symbol = _ledger_income(
             account,
             pos["symbol"],
+            base_position_id=str(pid),
             expiry_start=expiry_start_ts,
             expiry_end=expiry_end_ts,
         )
@@ -2116,10 +2887,22 @@ def position_metrics(
         base_plus_protection = (current_base_intrinsic or 0.0) + (intrinsic_protection or 0.0)
         base_health_delta = base_plus_protection - (initial_intrinsic or 0.0)
 
+        base_leg_ids = _base_leg_ids_from_legs(legs)
+        open_base_leg_ids = _open_base_leg_ids(legs)
+        if not open_base_leg_ids:
+            open_base_leg_ids = _marked_base_leg_ids(legs)
         ledger_scope = ledger_df
         if not ledger_df.empty:
             ledger_scope = ledger_df[ledger_df["base_position_id"] == str(pid)]
-        short_snapshot = _short_position_snapshot(ledger_scope) if ledger_scope is not None else {
+        short_scope = ledger_scope
+        if short_scope is not None and open_base_leg_ids:
+            short_scope = short_scope[short_scope["base_leg_id"].astype(str).isin(open_base_leg_ids)]
+        if not open_base_leg_ids:
+            open_base_leg_ids = _open_base_leg_ids_from_ledger(ledger_scope) if ledger_scope is not None else []
+        short_snapshot = _short_position_snapshot(
+            short_scope,
+            defense_df=ledger_scope,
+        ) if short_scope is not None else {
             "open_instances": [],
             "closed_instances": [],
             "short_realized_pnl": 0.0,
@@ -2127,30 +2910,86 @@ def position_metrics(
             "working_juice": 0.0,
             "locked_juice": 0.0,
             "weekly_locked_income": 0.0,
+            "weekly_defense_debit": 0.0,
             "open_short_contracts": 0.0,
             "last10_defense_debits": [],
             "avg_defense_debit": None,
             "debit_cap": None,
             "safety_reserve": 0.0,
+            "avg_capture_pct": None,
+        }
+        principal_cost = _initial_investment_from_marked_legs(legs)
+        if principal_cost is None and ledger_scope is not None and open_base_leg_ids:
+            principal_cost = _base_open_cost_from_ledger(
+                ledger_scope,
+                open_base_leg_ids,
+            )
+        if principal_cost is None and open_legs is not None and not open_legs.empty:
+            principal_cost = _base_entry_cost_from_legs(open_legs)
+        long_value_now = _base_mark_value_from_legs(open_legs, open_base_leg_ids)
+        if long_value_now is None and ledger_scope is not None:
+            long_value_now = _base_mark_value_from_ledger(ledger_scope, open_base_leg_ids)
+        layer_snapshot = _position_layer_snapshot(
+            ledger_scope,
+            open_base_leg_ids,
+            principal_cost,
+            long_value_now,
+        )
+        short_realized = float(layer_snapshot.get("short_realized_pnl") or 0.0)
+        short_unrealized = float(layer_snapshot.get("short_unrealized_pnl") or 0.0)
+        liquidation_value = float(layer_snapshot.get("liquidation_value") or 0.0)
+        cushion = float(layer_snapshot.get("cushion") or 0.0)
+        safety_reserve = float(layer_snapshot.get("safety_reserve") or 0.0)
+        open_short_contracts = float(short_snapshot.get("open_short_contracts") or 0.0)
+        protected_now = layer_snapshot.get("protected_now")
+        withdrawable_now = float(layer_snapshot.get("withdrawable_now") or 0.0)
+
+        capture_target_pct = _to_float_or_none(pos.get("capture_target_pct")) or 0.70
+        min_dte_to_roll = int(_to_float_or_none(pos.get("min_dte_to_roll")) or 3)
+        cheap_buyback_threshold = _to_float_or_none(pos.get("cheap_buyback_threshold")) or 0.30
+        hang_timer_max = int(_to_float_or_none(pos.get("hang_timer_max")) or 2)
+        plan_settings = {
+            "capture_target_pct": capture_target_pct,
+            "min_dte_to_roll": min_dte_to_roll,
+            "cheap_buyback_threshold": cheap_buyback_threshold,
+            "hang_timer_max": hang_timer_max,
         }
 
-        principal_cost = _base_entry_cost_from_legs(open_legs if not open_legs.empty else legs)
-        long_value_now = base_value
-        short_realized = float(short_snapshot.get("short_realized_pnl") or 0.0)
-        short_unrealized = float(short_snapshot.get("short_unrealized_pnl") or 0.0)
-        liquidation_value = (long_value_now or 0.0) + short_realized + short_unrealized
-        cushion = liquidation_value - (principal_cost or 0.0)
-        safety_reserve = float(short_snapshot.get("safety_reserve") or 0.0)
-        open_short_contracts = float(short_snapshot.get("open_short_contracts") or 0.0)
-        protected_now = None if not principal_cost else (liquidation_value >= principal_cost)
-        withdrawable_now = max(0.0, cushion - safety_reserve)
+        stock_entry = _latest_regime_entry(regimes_df, pos["symbol"]) if not regimes_df.empty else {}
+        market_entry = _latest_regime_entry(regimes_df, "") if not regimes_df.empty else {}
+        regime_condition = _overall_condition(
+            _normalize_condition(stock_entry.get("stock_condition")),
+            _normalize_condition(market_entry.get("market_condition")),
+        )
+        breaker_info = _circuit_breaker_from_inputs(pos["symbol"], breaker_inputs, regimes_df)
+        breaker_action = str(breaker_info.get("breaker_action") or "")
+        breaker_status = "ExitNow" if breaker_action == "EXIT" else ("ExitCandidate" if breaker_action == "DEFEND" else "None")
 
-        signals, income_roll, protection_roll, emergency_roll, recommended_action = _short_signals_for_position(
+        signals, income_roll, protection_roll, emergency_roll, recommended_action, rule_triggered, rule_explanation = _short_signals_for_position(
             short_snapshot.get("open_instances") or [],
             pos["symbol"],
             cushion,
             safety_reserve,
+            plan_settings,
+            regime_condition,
+            breaker_status,
         )
+
+        maturity_flags = _maturity_flags_for_position(
+            ledger_scope,
+            open_base_leg_ids,
+            principal_cost,
+            long_value_now,
+        ) if ledger_scope is not None else []
+        maturity_streak = _count_consecutive_true(maturity_flags)
+        is_mature = maturity_streak >= 3
+        stage = "BUILDING"
+        if is_mature and withdrawable_now > 0:
+            stage = "PAYCHECK_MODE"
+        elif is_mature:
+            stage = "MATURE"
+        elif protected_now:
+            stage = "PROTECTED"
 
         if safety_reserve or open_short_contracts:
             try:
@@ -2184,6 +3023,13 @@ def position_metrics(
 
         plan_flag, act_flag = _roll_flags(legs)
 
+        current_epoch_id = None
+        base_cost_basis_locked = None
+        net_juice_week = None
+        weekly_return_pct = None
+        rolling_4w_avg_return_pct = None
+        on_target_flag = None
+
         def _clean(val):
             return val if val is not None and not pd.isna(val) else None
 
@@ -2197,6 +3043,10 @@ def position_metrics(
                     base_type=_clean(pos.get("base_type")),
                     opened_date=_clean(pos.get("opened_date")),
                     closed_date=_clean(pos.get("closed_date")),
+                    capture_target_pct=_clean(_to_float_or_none(pos.get("capture_target_pct"))),
+                    min_dte_to_roll=_clean(_to_float_or_none(pos.get("min_dte_to_roll"))),
+                    cheap_buyback_threshold=_clean(_to_float_or_none(pos.get("cheap_buyback_threshold"))),
+                    hang_timer_max=_clean(_to_float_or_none(pos.get("hang_timer_max"))),
                 ),
                 base_value=base_value,
                 base_cost=base_cost,
@@ -2231,15 +3081,24 @@ def position_metrics(
                 working_juice=_clean_number(short_snapshot.get("working_juice")),
                 locked_juice=_clean_number(short_snapshot.get("locked_juice")),
                 weekly_locked_income=_clean_number(short_snapshot.get("weekly_locked_income")),
+                weekly_defense_debit=_clean_number(short_snapshot.get("weekly_defense_debit")),
                 avg_defense_debit=_clean_number(short_snapshot.get("avg_defense_debit")),
                 debit_cap=_clean_number(short_snapshot.get("debit_cap")),
                 open_short_contracts=_clean_number(open_short_contracts),
                 safety_reserve=_clean_number(safety_reserve),
                 withdrawable_now=_clean_number(withdrawable_now),
+                avg_capture_pct=_clean_number(short_snapshot.get("avg_capture_pct")),
+                maturity_streak_weeks=maturity_streak,
+                is_mature=is_mature,
+                stage=stage,
                 income_roll=income_roll,
                 protection_roll=protection_roll,
                 emergency_roll=emergency_roll,
                 recommended_action=recommended_action,
+                rule_triggered=rule_triggered,
+                rule_explanation=rule_explanation,
+                circuit_breaker_status=breaker_status,
+                circuit_breaker_reasons=breaker_info.get("breaker_reasons") or [],
                 last10_defense_debits=short_snapshot.get("last10_defense_debits") or [],
                 open_short_signals=signals,
             )
@@ -2835,6 +3694,40 @@ def business_dashboard(
     preservation = _safe_ratio(nav_current, contributed) if nav_current is not None else None
 
     pos_metrics = position_metrics(account, expiry_start=expiry_start, expiry_end=expiry_end)
+    ledger_df = _normalize_ledger_df(excel_loader.get_ledger_rows(account))
+    position_inputs: List[Dict[str, object]] = []
+    for pm in pos_metrics:
+        pid = pm.position.position_id
+        legs = business_loader.list_base_legs(pid)
+        ledger_scope = ledger_df[ledger_df["base_position_id"] == str(pid)] if not ledger_df.empty else ledger_df
+        base_leg_ids = _open_base_leg_ids(legs)
+        if not base_leg_ids:
+            base_leg_ids = _marked_base_leg_ids(legs)
+        if not base_leg_ids:
+            base_leg_ids = _open_base_leg_ids_from_ledger(ledger_scope) if ledger_scope is not None else []
+        position_inputs.append(
+            {
+                "ledger_df": ledger_scope,
+                "base_leg_ids": base_leg_ids,
+                "principal_cost": pm.principal_cost,
+                "long_value_fallback": pm.long_value_now,
+            }
+        )
+
+    account_principal = float(sum((pm.principal_cost or 0.0) for pm in pos_metrics))
+    account_liquidation = float(sum((pm.liquidation_value or 0.0) for pm in pos_metrics))
+    account_cushion = account_liquidation - account_principal
+    account_safety = float(sum((pm.safety_reserve or 0.0) for pm in pos_metrics))
+    account_withdrawable = max(0.0, account_cushion - account_safety)
+    account_protected = account_liquidation >= account_principal if account_principal else False
+    account_weekly_locked = float(sum((pm.weekly_locked_income or 0.0) for pm in pos_metrics))
+    account_weekly_defense = float(sum((pm.weekly_defense_debit or 0.0) for pm in pos_metrics))
+    account_net_weekly = account_weekly_locked - account_weekly_defense
+    account_working_juice = float(sum((pm.working_juice or 0.0) for pm in pos_metrics))
+    account_locked_juice = float(sum((pm.locked_juice or 0.0) for pm in pos_metrics))
+    account_flags = _account_maturity_flags(position_inputs)
+    account_streak = _count_consecutive_true(account_flags)
+    account_is_mature = account_streak >= 3
     required_reserve = float(sum((pm.reserve_cash or 0) for pm in pos_metrics))
     free_cash = None
     nav_cash = None
@@ -2949,4 +3842,151 @@ def business_dashboard(
         mode=mode,
         nav_weekly=nav_weekly_points,
         nav_monthly=nav_monthly_points,
+        account_summary=AccountSummary(
+            account=account,
+            principal_cost=_clean_number(account_principal) or 0.0,
+            liquidation_value=_clean_number(account_liquidation) or 0.0,
+            cushion=_clean_number(account_cushion) or 0.0,
+            protected_now=account_protected,
+            safety_reserve=_clean_number(account_safety) or 0.0,
+            withdrawable_now=_clean_number(account_withdrawable) or 0.0,
+            maturity_streak_weeks=account_streak,
+            is_mature=account_is_mature,
+            weekly_locked_income=_clean_number(account_weekly_locked) or 0.0,
+            weekly_defense_debits=_clean_number(account_weekly_defense) or 0.0,
+            net_weekly_income=_clean_number(account_net_weekly) or 0.0,
+            working_juice=_clean_number(account_working_juice) or 0.0,
+            locked_juice=_clean_number(account_locked_juice) or 0.0,
+        ),
+        positions=pos_metrics,
     )
+
+
+def mark_dashboard(account: Optional[str] = None) -> List[MarkPositionRow]:
+    today = datetime.now().date()
+    positions_df = business_loader.list_positions(account)
+    if positions_df.empty:
+        return []
+    positions_df = positions_df.copy()
+    positions_df["strategy_norm"] = positions_df.get("strategy").apply(_normalize_strategy_label)
+    positions_df = positions_df[positions_df["strategy_norm"] == "CFM"]
+    if "closed_date" in positions_df.columns:
+        closed = positions_df["closed_date"]
+        open_mask = closed.isna() | (closed.astype(str).str.strip() == "")
+        positions_df = positions_df[open_mask]
+    if positions_df.empty:
+        return []
+
+    ledger_rows = excel_loader.get_ledger_rows(account)
+    net_by_position = _net_juice_current_month_by_position(ledger_rows, positions_df, today)
+    regimes_df = business_loader.list_regimes()
+
+    results: List[MarkPositionRow] = []
+    for _, pos in positions_df.iterrows():
+        position_id = str(pos.get("position_id"))
+        symbol = str(pos.get("symbol") or "").upper()
+        regime_entry = _latest_regime_entry_on_or_before(regimes_df, symbol, today)
+        stock_regime = _normalize_condition(regime_entry.get("stock_condition")) if regime_entry else ""
+        if not stock_regime:
+            stock_regime = "Unknown"
+        legs_df = business_loader.list_base_legs(position_id)
+        long_dte, long_delta, dte_worst, dte_avg, delta_avg, ambiguous = _active_long_leg_stats(legs_df, today)
+        strength = _strength_status(stock_regime, long_dte, long_delta, ambiguous)
+        results.append(
+            MarkPositionRow(
+                position_id=position_id,
+                symbol=symbol,
+                stock_regime=stock_regime,
+                long_dte_days=long_dte,
+                long_dte_avg=dte_avg,
+                long_dte_worst=dte_worst,
+                long_delta=long_delta,
+                long_delta_avg=delta_avg,
+                long_delta_worst=long_delta,
+                strength_status=strength,
+                net_juice_current_month=net_by_position.get(position_id, 0.0),
+            )
+        )
+    return results
+
+
+def minimal_position_status(account: Optional[str] = None) -> List[MinimalPositionStatus]:
+    today = datetime.now().date()
+    positions_df = business_loader.list_positions(account)
+    if positions_df.empty:
+        return []
+    positions_df = positions_df.copy()
+    positions_df["strategy_norm"] = positions_df.get("strategy").apply(_normalize_strategy_label)
+    positions_df = positions_df[positions_df["strategy_norm"] == "CFM"]
+    if "closed_date" in positions_df.columns:
+        closed = positions_df["closed_date"]
+        open_mask = closed.isna() | (closed.astype(str).str.strip() == "")
+        positions_df = positions_df[open_mask]
+    if positions_df.empty:
+        return []
+
+    regimes_df = business_loader.list_regimes()
+    ledger_rows = excel_loader.get_ledger_rows(account)
+    ledger_df = _normalize_ledger_df(ledger_rows)
+    if not ledger_df.empty:
+        ledger_df = _ensure_signed_juice(ledger_df)
+    results: List[MinimalPositionStatus] = []
+    for _, pos in positions_df.iterrows():
+        position_id = str(pos.get("position_id"))
+        symbol = str(pos.get("symbol") or "").upper()
+        stock_entry = _latest_regime_entry_on_or_before(regimes_df, symbol, today)
+        market_entry = _latest_market_regime(regimes_df, today)
+        stock_regime = _normalize_condition(stock_entry.get("stock_condition")) if stock_entry else ""
+        market_regime = _normalize_condition(market_entry.get("market_condition")) if market_entry else ""
+        if not stock_regime:
+            stock_regime = "Unknown"
+        if not market_regime:
+            market_regime = "Unknown"
+
+        legs_df = business_loader.list_base_legs(position_id)
+        long_dte, long_delta, _, _, _, _ = _active_long_leg_stats(legs_df, today)
+        open_base_leg_ids = _open_base_leg_ids(legs_df)
+        if not open_base_leg_ids:
+            open_base_leg_ids = _marked_base_leg_ids(legs_df)
+
+        ticket_health = compute_ticket_health(long_dte, long_delta)
+        conviction = compute_conviction(market_regime, stock_regime)
+        posture = compute_operating_posture(conviction, ticket_health)
+
+        if stock_regime == "Unknown" or market_regime == "Unknown":
+            conviction = "MED"
+            posture = "MANAGE"
+
+        net_juice = get_net_juice_current_month_by_expiry(account, position_id, today)
+        week_start, week_end = _current_week_window()
+        weekly_net_income = _weekly_net_juice_by_expiry_week(
+            ledger_df,
+            position_id,
+            week_start,
+            week_end,
+        )
+        ledger_scope = ledger_df[ledger_df["base_position_id"] == str(position_id)] if not ledger_df.empty else ledger_df
+        initial_base_cost = _initial_base_cost_for_position(legs_df, ledger_scope, open_base_leg_ids)
+        weekly_return_pct = _safe_ratio(weekly_net_income, initial_base_cost)
+        weekly_return_pct = float(round(weekly_return_pct * 100, 2)) if weekly_return_pct is not None else None
+        marked_ids = _marked_base_leg_ids(legs_df)
+        net_juice_since_open = _net_juice_since_open(ledger_df, position_id, marked_ids)
+
+        results.append(
+            MinimalPositionStatus(
+                position_id=position_id,
+                symbol=symbol,
+                market_regime=market_regime,
+                stock_regime=stock_regime,
+                long_dte_days=long_dte,
+                long_delta=long_delta,
+                ticket_health=ticket_health,
+                conviction=conviction,
+                operating_posture=posture,
+                net_juice_current_month=net_juice,
+                weekly_net_income_avg=float(round(weekly_net_income, 2)),
+                weekly_return_pct=weekly_return_pct,
+                net_juice_since_open=float(round(net_juice_since_open, 2)) if net_juice_since_open is not None else None,
+            )
+        )
+    return results

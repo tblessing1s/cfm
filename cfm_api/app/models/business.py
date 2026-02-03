@@ -28,6 +28,10 @@ class BasePosition(BaseModel):
     base_type: str
     opened_date: date
     closed_date: Optional[date] = None
+    capture_target_pct: Optional[float] = None
+    min_dte_to_roll: Optional[int] = None
+    cheap_buyback_threshold: Optional[float] = None
+    hang_timer_max: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -44,10 +48,17 @@ class BaseLeg(BaseModel):
     expiry: Optional[date] = None
     price: float
     underlying_price: Optional[float] = None
+    delta: Optional[float] = None
     fees: float = 0.0
     amount: float
     tag: Optional[str] = None
     condition: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BaseLegUpdate(BaseModel):
+    delta: Optional[float] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -122,17 +133,60 @@ class PositionMetrics(BaseModel):
     working_juice: Optional[float] = None
     locked_juice: Optional[float] = None
     weekly_locked_income: Optional[float] = None
+    weekly_defense_debit: Optional[float] = None
     avg_defense_debit: Optional[float] = None
     debit_cap: Optional[float] = None
     open_short_contracts: Optional[float] = None
     safety_reserve: Optional[float] = None
     withdrawable_now: Optional[float] = None
+    avg_capture_pct: Optional[float] = None
+    maturity_streak_weeks: Optional[int] = None
+    is_mature: Optional[bool] = None
+    stage: Optional[str] = None
     income_roll: bool = False
     protection_roll: bool = False
     emergency_roll: bool = False
     recommended_action: Optional[str] = None
+    rule_triggered: Optional[str] = None
+    rule_explanation: Optional[str] = None
+    circuit_breaker_status: Optional[str] = None
+    circuit_breaker_reasons: List[str] = Field(default_factory=list)
     last10_defense_debits: List[float] = Field(default_factory=list)
     open_short_signals: List[ShortLegSignal] = Field(default_factory=list)
+
+
+class MarkPositionRow(BaseModel):
+    position_id: str
+    symbol: str
+    stock_regime: Optional[str] = None
+    long_dte_days: Optional[int] = None
+    long_dte_avg: Optional[float] = None
+    long_dte_worst: Optional[int] = None
+    long_delta: Optional[float] = None
+    long_delta_avg: Optional[float] = None
+    long_delta_worst: Optional[float] = None
+    strength_status: str
+    net_juice_current_month: float = 0.0
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MinimalPositionStatus(BaseModel):
+    position_id: str
+    symbol: str
+    market_regime: str
+    stock_regime: str
+    long_dte_days: Optional[int] = None
+    long_delta: Optional[float] = None
+    ticket_health: str
+    conviction: str
+    operating_posture: str
+    net_juice_current_month: float = 0.0
+    weekly_net_income_avg: Optional[float] = None
+    weekly_return_pct: Optional[float] = None
+    net_juice_since_open: Optional[float] = None
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class BusinessDashboard(BaseModel):
@@ -161,6 +215,25 @@ class BusinessDashboard(BaseModel):
     mode: Optional[str] = None  # SCALE_READY / MAINTAIN / STRENGTHEN
     nav_weekly: List["NavPoint"] = Field(default_factory=list)
     nav_monthly: List["NavPoint"] = Field(default_factory=list)
+    account_summary: Optional["AccountSummary"] = None
+    positions: List[PositionMetrics] = Field(default_factory=list)
+
+
+class AccountSummary(BaseModel):
+    account: Optional[str] = None
+    principal_cost: float = 0.0
+    liquidation_value: float = 0.0
+    cushion: float = 0.0
+    protected_now: bool = False
+    safety_reserve: float = 0.0
+    withdrawable_now: float = 0.0
+    maturity_streak_weeks: int = 0
+    is_mature: bool = False
+    weekly_locked_income: float = 0.0
+    weekly_defense_debits: float = 0.0
+    net_weekly_income: float = 0.0
+    working_juice: float = 0.0
+    locked_juice: float = 0.0
 
 
 class NavPoint(BaseModel):

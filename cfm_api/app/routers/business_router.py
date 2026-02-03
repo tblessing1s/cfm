@@ -9,10 +9,13 @@ from ..models.business import (
     NavSnapshot,
     BasePosition,
     BaseLeg,
+    BaseLegUpdate,
     Reserve,
     ReplacementCost,
     BusinessDashboard,
     PositionMetrics,
+    MarkPositionRow,
+    MinimalPositionStatus,
     PortfolioSummary,
     StockSummaryRow,
     StockDetail,
@@ -138,6 +141,20 @@ async def list_positions_raw(account: str | None = Query(None, description="Acco
     return [BasePosition(**record) for record in df.to_dict("records")]
 
 
+@router.get("/mark-dashboard", response_model=List[MarkPositionRow])
+async def read_mark_dashboard(
+    account: str | None = Query(None, description="Account name or label"),
+) -> List[MarkPositionRow]:
+    return business_metrics.mark_dashboard(account)
+
+
+@router.get("/positions/minimal-status", response_model=List[MinimalPositionStatus])
+async def read_minimal_positions(
+    account: str | None = Query(None, description="Account name or label"),
+) -> List[MinimalPositionStatus]:
+    return business_metrics.minimal_position_status(account)
+
+
 @router.post("/positions", response_model=BasePosition, status_code=201)
 async def create_position(payload: BasePosition) -> BasePosition:
     created = business_loader.add_position(payload.model_dump())
@@ -201,6 +218,12 @@ async def list_base_legs(position_id: str | None = Query(None)) -> List[BaseLeg]
 async def create_base_leg(payload: BaseLeg) -> BaseLeg:
     created = business_loader.add_base_leg(payload.model_dump())
     return BaseLeg(**created)
+
+
+@router.put("/base-legs/{base_leg_id}", response_model=BaseLeg)
+async def update_base_leg(base_leg_id: str, payload: BaseLegUpdate) -> BaseLeg:
+    updated = business_loader.update_base_leg(base_leg_id, payload.model_dump(exclude_unset=True))
+    return BaseLeg(**updated)
 
 
 @router.get("/reserves", response_model=List[Reserve])

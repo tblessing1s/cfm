@@ -178,6 +178,16 @@ def _ensure_core_columns(df: pd.DataFrame) -> pd.DataFrame:
     df["premium_in"] = pd.to_numeric(df["premium_in"], errors="coerce")
     df["premium_out"] = pd.to_numeric(df["premium_out"], errors="coerce")
     df["dte"] = pd.to_numeric(df["dte"], errors="coerce").astype("Int64")
+    if "strategy" in df.columns:
+        def _normalize_strategy(value: Any) -> str:
+            text = str(value or "").strip()
+            lowered = text.lower()
+            if "cashflow" in lowered or "cfm" in lowered:
+                return "CFM"
+            if "juice" in lowered or "jl" in lowered:
+                return "JL"
+            return text
+        df["strategy"] = df["strategy"].apply(_normalize_strategy)
 
     return df
 
@@ -339,18 +349,25 @@ def append_ledger_entries(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         elif "travis" in descriptor.name.lower():
             account_label = "Travis"
 
+        def _is_cfm_entry() -> bool:
+            strategy = str(entry.get("strategy") or "").strip().lower()
+            side_val = str(entry.get("side") or "Call").strip().lower()
+            action_val = str(entry.get("action") or "Open").strip().lower()
+            return ("cfm" in strategy or "cashflow" in strategy) and side_val == "call" and action_val in {"open", "close", "mark"}
+
+        def _requires_underlying() -> bool:
+            return _is_cfm_entry()
+
+
         def resolve_underlying(value: Any) -> Any:
             if "Underlying" not in cols:
                 return value
-            resolved = value
-            if resolved in (None, ""):
-                # Attempt to reuse latest underlying for this key if omitted
-                try:
-                    resolved = _latest_underlying(ws, cols, ticker, strike, expiry, side) or _cached_underlying(ticker, expiry, trade_dt)
-                except Exception as exc:
-                    raise ValueError(f"Unable to resolve underlying for {ticker} {strike} {expiry} {side}: {exc}")
-            if resolved in (None, ""):
-                raise ValueError(f"Missing underlying for {ticker} {strike} {expiry} {side}; aborting write")
+            # Always attempt to resolve underlying from cache using trade time.
+            resolved = None
+            try:
+                resolved = _cached_underlying(ticker, expiry, trade_dt)
+            except Exception:
+                resolved = None
             return resolved
 
         def write_row(row_idx: int, action_value: str, premium_value: Any, underlying_value: Any) -> str:
@@ -377,23 +394,26 @@ def append_ledger_entries(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]
                 ws.cell(row=row_idx, column=cols["Base Position Id"], value=entry.get("base_position_id"))
             if "Base Leg Id" in cols:
                 ws.cell(row=row_idx, column=cols["Base Leg Id"], value=base_leg_id)
+            if "Base Epoch Id" in cols:
+                ws.cell(row=row_idx, column=cols["Base Epoch Id"], value=None)
             if "Key" in cols:
                 ws.cell(row=row_idx, column=cols["Key"], value=key_value)
             if "Side" in cols:
                 ws.cell(row=row_idx, column=cols["Side"], value=side)
             return key_value
 
-        if action == "CLOSE" and base_leg_id:
+
+        if action in {"CLOSE", "MARK"} and base_leg_id:
             mark_row = _find_mark_row(ws, cols, base_leg_id)
             if mark_row:
                 resolved_underlying = resolve_underlying(underlying)
-                key = write_row(mark_row, "CLOSE", premium, resolved_underlying)
+                key = write_row(mark_row, action, premium, resolved_underlying)
                 wb.save(descriptor.path)
                 appended_rows.append(
                     {
                         "account": descriptor.name,
                         "date": trade_dt.date().isoformat() if hasattr(trade_dt, "date") else None,
-                        "action": "CLOSE",
+                        "action": action,
                         "side": side,
                         "ticker": ticker,
                         "contracts": contracts,
@@ -512,6 +532,11 @@ def _ensure_ledger_headers(ws) -> None:
         changed = True
     if "Base Leg Id" not in headers:
         ws.cell(row=1, column=len(headers) + 1, value="Base Leg Id")
+        changed = True
+    if "Base Epoch Id" in headers:
+        idx = headers.index("Base Epoch Id") + 1
+        ws.delete_cols(idx)
+        headers.pop(idx - 1)
         changed = True
     # Caller is responsible for saving the workbook; avoid using ws.parent.filename.
 
@@ -650,10 +675,10 @@ def _cached_underlying(ticker: str, expiry: Any, trade_dt: Any = None) -> Any:
     if isinstance(data, dict) and not data:
         refresh_needed = True
 
-    trade_ts = trade_ts  # keep name stable below
-    # Alpha Vantage intraday timestamps are US/Eastern; user inputs are treated as local.
-    # Empirically the feed is ~1 hour ahead of the entered trade time, so bias lookup by +1h.
-    trade_ts_lookup = trade_ts + pd.Timedelta(hours=1) if trade_ts is not None and not pd.isna(trade_ts) else None
+    trade_ts_lookup = trade_ts if trade_ts is not None and not pd.isna(trade_ts) else None
+    if trade_ts_lookup is not None:
+        # Ledger timestamps are Central; Alpha cache timestamps are Eastern.
+        trade_ts_lookup = trade_ts_lookup + pd.Timedelta(hours=1)
     latest_ts = max(data.keys()) if data else None
     if latest_ts and trade_ts_lookup is not None:
         if pd.to_datetime(latest_ts) < trade_ts_lookup:
@@ -696,34 +721,75 @@ def _cached_underlying(ticker: str, expiry: Any, trade_dt: Any = None) -> Any:
 
     timestamps = sorted(data.keys())
     if not timestamps:
+        # Attempt a refresh if cache empty/missing for the month.
+        _refresh_alpha_cache(ticker, expiry_dt)
+        if path.exists():
+            with path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            data = _unwrap_alpha_cache_payload(data)
+        timestamps = sorted(data.keys()) if isinstance(data, dict) else []
+    if not timestamps:
+        raise RuntimeError(f"No alpha cache data for {ticker} {month_str}")
+
+    # Pre-parse timestamps once to avoid repeated parsing in loops.
+    parsed = []
+    for ts in timestamps:
+        try:
+            parsed.append((ts, pd.to_datetime(ts, errors="coerce")))
+        except Exception:
+            parsed.append((ts, pd.NaT))
+    parsed = [(ts, dt) for ts, dt in parsed if not pd.isna(dt)]
+    if not parsed:
         raise RuntimeError(f"No alpha cache data for {ticker} {month_str}")
 
     chosen_ts = None
     if trade_ts_lookup is not None:
-        for ts in reversed(timestamps):
-            ts_dt = pd.to_datetime(ts)
-            if ts_dt <= trade_ts_lookup:
-                chosen_ts = ts
-                break
+        # Only use same-day data to avoid leaking prices across dates.
+        trade_day = trade_ts_lookup.date()
+        same_day = [item for item in parsed if item[1].date() == trade_day]
+        if same_day:
+            chosen_ts = min(same_day, key=lambda item: abs(item[1] - trade_ts_lookup))[0]
+        else:
+            chosen_ts = None
     if not chosen_ts:
-        chosen_ts = timestamps[-1]
+        return None
 
     # If we still could not find a price at or before trade_ts, attempt one more refresh for safety.
     if trade_ts_lookup is not None:
         chosen_dt = pd.to_datetime(chosen_ts)
-        if chosen_dt < trade_ts_lookup:
+        if abs(chosen_dt - trade_ts_lookup) > pd.Timedelta(hours=24):
             _refresh_alpha_cache(ticker, expiry_dt)
             with path.open("r", encoding="utf-8") as f:
                 data = json.load(f)
             data = _unwrap_alpha_cache_payload(data)
-            timestamps = sorted(data.keys())
-            for ts in reversed(timestamps):
-                ts_dt = pd.to_datetime(ts)
-                if ts_dt <= trade_ts_lookup:
-                    chosen_ts = ts
-                    break
+            timestamps = sorted(data.keys()) if isinstance(data, dict) else []
+            parsed = []
+            for ts in timestamps:
+                try:
+                    parsed.append((ts, pd.to_datetime(ts, errors="coerce")))
+                except Exception:
+                    parsed.append((ts, pd.NaT))
+            parsed = [(ts, dt) for ts, dt in parsed if not pd.isna(dt)]
+            if parsed:
+                trade_day = trade_ts_lookup.date()
+                same_day = [item for item in parsed if item[1].date() == trade_day]
+                if same_day:
+                    chosen_ts = min(same_day, key=lambda item: abs(item[1] - trade_ts_lookup))[0]
+                else:
+                    chosen_ts = None
 
-    entry = data.get(chosen_ts, {})
+    entry = data.get(chosen_ts, {}) if isinstance(data, dict) else {}
+    if not entry and trade_ts_lookup is not None:
+        # If the chosen entry is empty, refresh once and retry closest match.
+        _refresh_alpha_cache(ticker, expiry_dt)
+        if path.exists():
+            with path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            data = _unwrap_alpha_cache_payload(data)
+            timestamps = sorted(data.keys()) if isinstance(data, dict) else []
+            if timestamps:
+                chosen_ts = min(timestamps, key=lambda ts: abs(pd.to_datetime(ts) - trade_ts_lookup))
+                entry = data.get(chosen_ts, {})
     # Prefer mid of open/close when available
     def _to_float(val):
         try:
@@ -771,6 +837,11 @@ def update_ledger_row(account: str, row_number: int, data: Dict[str, Any]) -> Di
     if r < 2 or r > ws.max_row:
         raise ValueError(f"Row {r} is out of range for ledger {descriptor.path.name}")
 
+    existing_date = None
+    if "Date" in cols:
+        existing_date = ws.cell(row=r, column=cols["Date"]).value
+    trade_dt_value = data.get("trade_datetime") or existing_date
+
     account_label = descriptor.label
     if "christie" in account_label.lower():
         account_label = "Christie"
@@ -781,7 +852,7 @@ def update_ledger_row(account: str, row_number: int, data: Dict[str, Any]) -> Di
     if "Account" in cols:
         ws.cell(row=r, column=cols["Account"], value=account_label)
     if "Date" in cols:
-        ws.cell(row=r, column=cols["Date"], value=data.get("trade_datetime"))
+        ws.cell(row=r, column=cols["Date"], value=trade_dt_value)
     action_val = str(data.get("action") or "Open").strip().upper()
     if "Action" in cols:
         ws.cell(row=r, column=cols["Action"], value=action_val)
@@ -800,6 +871,12 @@ def update_ledger_row(account: str, row_number: int, data: Dict[str, Any]) -> Di
     if "Underlying" in cols:
         underlying = data.get("underlying")
         if underlying in (None, ""):
+            strategy = str(data.get("strategy") or "").strip().lower()
+            side_val = str(data.get("side") or "Call").strip().lower()
+            action_val = str(data.get("action") or "Open").strip().lower()
+            is_cfm = "cfm" in strategy or "cashflow" in strategy
+            if is_cfm and side_val == "call" and action_val in {"open", "close", "mark"}:
+                raise ValueError(f"Missing underlying for {data.get('ticker')} {data.get('strike')} {data.get('expiry')} {data.get('side')}; aborting update")
             try:
                 underlying = _latest_underlying(
                     ws,
@@ -811,13 +888,19 @@ def update_ledger_row(account: str, row_number: int, data: Dict[str, Any]) -> Di
                 ) or _cached_underlying((data.get("ticker") or "").upper(), data.get("expiry"), data.get("trade_datetime"))
             except Exception as exc:
                 raise ValueError(f"Unable to resolve underlying for {data.get('ticker')} {data.get('strike')} {data.get('expiry')} {data.get('side')}: {exc}")
-        if underlying in (None, ""):
-            raise ValueError(f"Missing underlying for {data.get('ticker')} {data.get('strike')} {data.get('expiry')} {data.get('side')}; aborting update")
-        ws.cell(row=r, column=cols["Underlying"], value=underlying)
+        # Always attempt to resolve underlying from cache using trade time.
+        resolved = None
+        try:
+            resolved = _cached_underlying((data.get("ticker") or "").upper(), data.get("expiry"), trade_dt_value)
+        except Exception:
+            resolved = None
+        ws.cell(row=r, column=cols["Underlying"], value=resolved)
     if "Base Position Id" in cols:
         ws.cell(row=r, column=cols["Base Position Id"], value=data.get("base_position_id"))
     if "Base Leg Id" in cols:
         ws.cell(row=r, column=cols["Base Leg Id"], value=data.get("base_leg_id"))
+    if "Base Epoch Id" in cols:
+        ws.cell(row=r, column=cols["Base Epoch Id"], value=None)
     if "Side" in cols:
         ws.cell(row=r, column=cols["Side"], value=data.get("side") or "Call")
     if "Key" in cols:
