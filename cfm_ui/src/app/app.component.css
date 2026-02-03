@@ -656,6 +656,14 @@ header p {
   background: var(--surface-2);
 }
 
+.layer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
 .metric-label {
   font-size: 0.85rem;
   color: var(--text-soft);
@@ -675,6 +683,13 @@ header p {
   margin-top: 0.25rem;
   font-size: 0.8rem;
   color: var(--text-muted);
+}
+
+.focus-list {
+  margin: 0.25rem 0 0 1rem;
+  padding: 0;
+  color: var(--text-muted);
+  font-size: 0.85rem;
 }
 
 .rules-panel {
@@ -837,6 +852,65 @@ header p {
   justify-content: space-between;
   font-size: 0.95rem;
   padding: 0.25rem 0;
+}
+
+.metric-section {
+  margin-top: 0.65rem;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.info-icon {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  cursor: help;
+}
+
+.inline-help {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.info-icon::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: 130%;
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 160px;
+  max-width: 240px;
+  padding: 0.4rem 0.55rem;
+  border-radius: 0.5rem;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.75rem;
+  text-transform: none;
+  letter-spacing: normal;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.2);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+  z-index: 5;
+}
+
+.info-icon:hover::after {
+  opacity: 1;
 }
 
 .badge-green {

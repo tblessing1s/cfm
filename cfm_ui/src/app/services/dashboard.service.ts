@@ -72,6 +72,10 @@ export interface BasePosition {
   base_type: string;
   opened_date: string;
   closed_date?: string;
+  capture_target_pct?: number;
+  min_dte_to_roll?: number;
+  cheap_buyback_threshold?: number;
+  hang_timer_max?: number;
 }
 
 export interface BaseLeg {
@@ -86,10 +90,15 @@ export interface BaseLeg {
   expiry?: string;
   price: number;
   underlying_price?: number;
+  delta?: number;
   fees?: number;
   amount: number;
   tag?: string;
   condition?: string;
+}
+
+export interface BaseLegUpdate {
+  delta?: number | null;
 }
 
 export interface ReserveRow {
@@ -156,17 +165,73 @@ export interface PositionMetrics {
   working_juice?: number;
   locked_juice?: number;
   weekly_locked_income?: number;
+  weekly_defense_debit?: number;
   avg_defense_debit?: number;
   debit_cap?: number;
   open_short_contracts?: number;
   safety_reserve?: number;
   withdrawable_now?: number;
+  avg_capture_pct?: number;
+  maturity_streak_weeks?: number;
+  is_mature?: boolean;
+  stage?: string;
   income_roll: boolean;
   protection_roll: boolean;
   emergency_roll: boolean;
   recommended_action?: string;
+  rule_triggered?: string;
+  rule_explanation?: string;
+  circuit_breaker_status?: string;
+  circuit_breaker_reasons?: string[];
   last10_defense_debits?: number[];
   open_short_signals?: ShortLegSignal[];
+}
+
+export interface MarkPositionRow {
+  position_id: string;
+  symbol: string;
+  stock_regime?: string;
+  long_dte_days?: number | null;
+  long_dte_avg?: number | null;
+  long_dte_worst?: number | null;
+  long_delta?: number | null;
+  long_delta_avg?: number | null;
+  long_delta_worst?: number | null;
+  strength_status: string;
+  net_juice_current_month: number;
+}
+
+export interface MinimalPositionStatus {
+  position_id: string;
+  symbol: string;
+  market_regime: string;
+  stock_regime: string;
+  long_dte_days?: number | null;
+  long_delta?: number | null;
+  ticket_health: string;
+  conviction: string;
+  operating_posture: string;
+  net_juice_current_month: number;
+  weekly_net_income_avg?: number | null;
+  weekly_return_pct?: number | null;
+  net_juice_since_open?: number | null;
+}
+
+export interface AccountSummary {
+  account?: string;
+  principal_cost: number;
+  liquidation_value: number;
+  cushion: number;
+  protected_now: boolean;
+  safety_reserve: number;
+  withdrawable_now: number;
+  maturity_streak_weeks: number;
+  is_mature: boolean;
+  weekly_locked_income: number;
+  weekly_defense_debits: number;
+  net_weekly_income: number;
+  working_juice: number;
+  locked_juice: number;
 }
 
 export interface BusinessDashboard {
@@ -195,6 +260,8 @@ export interface BusinessDashboard {
   mode?: string;
   nav_weekly?: { period_start: string; nav_total: number; nav_cash?: number; nav_long_value?: number; nav_liabilities?: number }[];
   nav_monthly?: { period_start: string; nav_total: number; nav_cash?: number; nav_long_value?: number; nav_liabilities?: number }[];
+  account_summary?: AccountSummary;
+  positions?: PositionMetrics[];
 }
 
 export interface PillarSeriesPoint {
@@ -370,7 +437,7 @@ export interface LedgerRow {
 export interface LedgerEntryCreate {
   account: string;
   ticker: string;
-  action: 'Open' | 'Close';
+  action: 'Open' | 'Close' | 'Mark';
   strategy: string;
   side?: 'Call' | 'Put';
   contracts: number;
@@ -396,6 +463,7 @@ export interface LedgerUpdatePayload {
   expiry: string;
   trade_datetime: string;
   premium: number;
+  underlying?: number;
   base_position_id?: string;
   base_leg_id?: string;
 }
@@ -433,6 +501,17 @@ export class DashboardService {
       params = params.set('expiry_end', expiryEnd);
     }
     return this.http.get<BusinessDashboard>(`${this.baseUrl}/business-dashboard`, params.keys().length ? { params } : {});
+  }
+
+  getMarkDashboard(account?: string): Observable<MarkPositionRow[]> {
+    return this.http.get<MarkPositionRow[]>(`${this.baseUrl}/mark-dashboard`, this._buildRequestOptions(account));
+  }
+
+  getMinimalPositionStatus(account?: string): Observable<MinimalPositionStatus[]> {
+    return this.http.get<MinimalPositionStatus[]>(
+      `${this.baseUrl}/positions/minimal-status`,
+      this._buildRequestOptions(account)
+    );
   }
 
   listPositionMetrics(
@@ -560,6 +639,10 @@ export class DashboardService {
       params = params.set('position_id', positionId);
     }
     return this.http.get<BaseLeg[]>(`${this.baseUrl}/base-legs`, { params });
+  }
+
+  updateBaseLeg(baseLegId: string, payload: BaseLegUpdate): Observable<BaseLeg> {
+    return this.http.put<BaseLeg>(`${this.baseUrl}/base-legs/${baseLegId}`, payload);
   }
 
   createReserve(payload: ReserveRow): Observable<ReserveRow> {

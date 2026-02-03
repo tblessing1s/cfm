@@ -8,6 +8,8 @@ import {
   LedgerRow,
   BusinessDashboard,
   PositionMetrics,
+  MarkPositionRow,
+  MinimalPositionStatus,
   NavSnapshot,
   BasePosition,
   BaseLeg,
@@ -44,7 +46,7 @@ import {
 interface LedgerDraft {
   account?: string;
   ticker: string;
-  action: 'Open' | 'Close';
+  action: 'Open' | 'Close' | 'Mark';
   strategy: string;
   side: 'Call' | 'Put';
   contracts?: number;
@@ -52,6 +54,7 @@ interface LedgerDraft {
   expiry?: string;
   trade_datetime?: string;
   premium?: number;
+  underlying?: number;
   condition?: string;
   base_position_id?: string;
   base_leg_id?: string;
@@ -69,6 +72,12 @@ export class AppComponent implements OnInit {
   activeBusinessView: 'snapshot' | 'cashflow' = 'snapshot';
   metrics?: DashboardMetrics;
   businessMetrics?: BusinessDashboard;
+  layerSectionsOpen: Record<number, boolean> = {
+    1: true,
+    2: false,
+    3: false,
+    4: false,
+  };
   portfolioSummary?: PortfolioSummary;
   stockRows: StockSummaryRow[] = [];
   portfolioExpiryStart = '';
@@ -79,6 +88,13 @@ export class AppComponent implements OnInit {
   stockDetail?: StockDetail;
   stockDetailLoading = false;
   positionMetrics: PositionMetrics[] = [];
+  markPositions: MarkPositionRow[] = [];
+  minimalStatuses: MinimalPositionStatus[] = [];
+  markBaseLegs: Record<string, BaseLeg[]> = {};
+  markDeltaEditorOpen: Record<string, boolean> = {};
+  markDeltaLegSelection: Record<string, string> = {};
+  markDeltaDraft: Record<string, number | null> = {};
+  markCardExpanded: Record<string, boolean> = {};
   showClosedBases = false;
   showClosedStocks = false;
   showAdvanced = false;
@@ -255,6 +271,7 @@ export class AppComponent implements OnInit {
     leg_fees: 'Commissions/fees associated with this base leg.',
     leg_amount: 'Signed cash flow for the leg (BUY negative, SELL positive).',
     leg_underlying: 'Underlying price used to split intrinsic vs extrinsic.',
+    leg_delta: 'Optional delta for long option legs (used for strength scoring).',
     leg_intrinsic: 'Computed intrinsic portion of the premium (not stored).',
     leg_extrinsic: 'Computed extrinsic portion of the premium (not stored).',
     leg_condition: 'Condition when logging this leg: GREEN (growth OK), YELLOW/RED (stay in cash).',
@@ -853,38 +870,187 @@ export class AppComponent implements OnInit {
     }
     const expiryStart = this.portfolioExpiryStart || undefined;
     const expiryEnd = this.portfolioExpiryEnd || undefined;
-    this.dashboardService.getBusinessDashboard(this.selectedAccount, expiryStart, expiryEnd).subscribe({
-      next: (data) => {
-        this.businessMetrics = data;
+    this.dashboardService.getMarkDashboard(this.selectedAccount).subscribe({
+      next: (rows) => {
+        this.markPositions = rows || [];
+        this.syncMarkDeltaSelections();
       },
       error: () => {
-        this.businessMetrics = undefined;
+        this.markPositions = [];
+      },
+    });
+    this.dashboardService.getMinimalPositionStatus(this.selectedAccount).subscribe({
+      next: (rows) => {
+        this.minimalStatuses = rows || [];
+      },
+      error: () => {
+        this.minimalStatuses = [];
       },
     });
     this.dashboardService
       .listPositionMetrics(this.selectedAccount, this.showClosedBases, expiryStart, expiryEnd)
       .subscribe({
         next: (rows) => {
-          this.positionMetrics = this.showClosedBases
-            ? rows
-            : rows.filter((pm) => !pm.position.closed_date);
-          // Ensure selectedPositionId stays valid
-          if (this.selectedPositionId) {
-            const exists = rows.some((pm) => pm.position.position_id === this.selectedPositionId);
-            if (!exists) {
-              this.selectedPositionId = undefined;
-            }
-          }
-          if (this.selectedPositionId) {
-            this.applyReserveDefault(this.selectedPositionId);
-          }
-          this.updateCashMovementWarning();
+          this.applyPositionMetrics(rows);
         },
         error: () => {
           this.positionMetrics = [];
         },
       });
     this.loadCashMovements(this.selectedAccount);
+  }
+
+  private syncMarkDeltaSelections(): void {
+    const existing = new Set(this.markPositions.map((row) => row.position_id));
+    for (const key of Object.keys(this.markDeltaEditorOpen)) {
+      if (!existing.has(key)) {
+        delete this.markDeltaEditorOpen[key];
+        delete this.markDeltaLegSelection[key];
+        delete this.markDeltaDraft[key];
+        delete this.markBaseLegs[key];
+        delete this.markCardExpanded[key];
+      }
+    }
+  }
+
+  toggleMarkCard(positionId: string): void {
+    this.markCardExpanded[positionId] = !this.markCardExpanded[positionId];
+  }
+
+  sectionHelp(section: 'regime' | 'ticket' | 'posture'): string {
+    if (section === 'regime') {
+      return 'Market + Stock Regime (Green/Yellow/Red) drive Conviction.';
+    }
+    if (section === 'ticket') {
+      return 'Long DTE = days to expiry (worst). Long Delta = lowest delta. Ticket Health: A=strong, B=ok, C=fragile.';
+    }
+    return 'Conviction (HIGH/MED/LOW) + Ticket Health -> Operating Posture (ATTACK/MANAGE/DEFEND).';
+  }
+
+  postureGuidance(posture: string): string {
+    const value = (posture || '').toUpperCase();
+    if (value === 'ATTACK') {
+      return 'Lean into weekly income. Scale only if ticket stays strong and regimes stay Green.';
+    }
+    if (value === 'DEFEND') {
+      return 'Reduce risk: tighten rolls, avoid scaling, and prioritize protection.';
+    }
+    return 'Manage risk: keep weeklies steady, monitor runway, and scale only with added protection.';
+  }
+
+  postureHelp(): string {
+    return 'ATTACK: high conviction + healthy ticket. MANAGE: mixed signals. DEFEND: low conviction or fragile ticket.';
+  }
+
+  postureFocus(posture: string): string[] {
+    const value = (posture || '').toUpperCase();
+    if (value === 'ATTACK') {
+      return ['Focus on growth', 'Sell weekly for income', 'Add only on strength'];
+    }
+    if (value === 'DEFEND') {
+      return ['Reduce position risk', 'Prioritize protection', 'Consider exit if Red persists'];
+    }
+    return ['Scale cautiously', 'Add protection if growing', 'Plan next roll'];
+  }
+
+  defenseTightness(posture: string): string {
+    const value = (posture || '').toUpperCase();
+    if (value === 'ATTACK') return 'Relaxed';
+    if (value === 'DEFEND') return 'Tight';
+    return 'Moderate';
+  }
+
+  defenseHelp(): string {
+    return 'Relaxed: short strike at/slightly OTM. Moderate: near ATM. Tight: ATM or slightly ITM for max protection.';
+  }
+
+  toggleMarkDeltaEditor(positionId: string): void {
+    const open = !this.markDeltaEditorOpen[positionId];
+    this.markDeltaEditorOpen[positionId] = open;
+    if (open) {
+      this.loadMarkBaseLegs(positionId);
+    }
+  }
+
+  loadMarkBaseLegs(positionId: string): void {
+    this.dashboardService.listBaseLegs(positionId).subscribe({
+      next: (legs) => {
+        const active = legs.filter((leg) => this.isActiveMarkLeg(leg));
+        const sorted = [...active].sort((a, b) => {
+          const aExp = a.expiry ? new Date(a.expiry).getTime() : 0;
+          const bExp = b.expiry ? new Date(b.expiry).getTime() : 0;
+          if (aExp !== bExp) return aExp - bExp;
+          const aStrike = a.strike ?? 0;
+          const bStrike = b.strike ?? 0;
+          return aStrike - bStrike;
+        });
+        this.markBaseLegs[positionId] = sorted;
+        if (!this.markDeltaLegSelection[positionId] && sorted.length) {
+          this.onMarkDeltaLegSelect(positionId, sorted[0].base_leg_id);
+        }
+      },
+      error: () => {
+        this.markBaseLegs[positionId] = [];
+      },
+    });
+  }
+
+  onMarkDeltaLegSelect(positionId: string, legId: string): void {
+    this.markDeltaLegSelection[positionId] = legId;
+    const leg = (this.markBaseLegs[positionId] || []).find((row) => row.base_leg_id === legId);
+    this.markDeltaDraft[positionId] = leg?.delta ?? null;
+  }
+
+  markLegLabel(leg: BaseLeg): string {
+    const expiry = leg.expiry ? new Date(leg.expiry).toISOString().slice(0, 10) : '—';
+    const strike = leg.strike !== undefined && leg.strike !== null ? leg.strike : '—';
+    return `${expiry} · ${strike}`;
+  }
+
+  isMarkDeltaHealthy(positionId: string): boolean {
+    const val = this.markDeltaDraft[positionId];
+    return val !== null && val !== undefined && val >= 0.85;
+  }
+
+  setMarkDeltaHealthy(positionId: string, checked: boolean): void {
+    this.markDeltaDraft[positionId] = checked ? 0.85 : 0.84;
+  }
+
+  private isActiveMarkLeg(leg: BaseLeg): boolean {
+    const tag = (leg.tag || '').toUpperCase();
+    if (tag !== 'MARK') return false;
+    if (leg.expiry) {
+      const expiry = new Date(leg.expiry);
+      const today = new Date();
+      expiry.setHours(0, 0, 0, 0);
+      today.setHours(0, 0, 0, 0);
+      if (expiry < today) return false;
+    }
+    return true;
+  }
+
+  saveMarkDelta(positionId: string): void {
+    const legId = this.markDeltaLegSelection[positionId];
+    if (!legId) {
+      this.businessError = 'Select a base leg before saving delta.';
+      return;
+    }
+    const delta = this.markDeltaDraft[positionId];
+    this.dashboardService.updateBaseLeg(legId, { delta }).subscribe({
+      next: (updated) => {
+        const legs = this.markBaseLegs[positionId] || [];
+        const idx = legs.findIndex((row) => row.base_leg_id === updated.base_leg_id);
+        if (idx >= 0) {
+          legs[idx] = { ...legs[idx], delta: updated.delta };
+        }
+        this.markBaseLegs[positionId] = [...legs];
+        this.loadBusiness();
+        this.businessSuccess = 'Delta saved.';
+      },
+      error: () => {
+        this.businessError = 'Unable to save delta.';
+      },
+    });
   }
 
   loadCashMovements(account: string): void {
@@ -930,6 +1096,7 @@ export class AppComponent implements OnInit {
       next: (row) => {
         this.regimeEntries = [row, ...this.regimeEntries];
         this.updateConditionChips();
+        this.loadBusiness();
         this.showRegimeDialog = false;
       },
     });
@@ -967,7 +1134,7 @@ export class AppComponent implements OnInit {
     const pm = this.positionMetrics.find((p) => p.position.position_id === positionId);
     if (pm) {
       this.tradeDraft.ticker = pm.position.symbol;
-      this.tradeDraft.strategy = pm.position.strategy || this.tradeDraft.strategy;
+      this.tradeDraft.strategy = this.normalizeStrategy(pm.position.strategy || this.tradeDraft.strategy);
       this.tradeDraft.side = 'Call';
       this.tradeDraft.base_position_id = pm.position.position_id;
       this.tradeDraft.base_leg_id = undefined;
@@ -1094,6 +1261,7 @@ export class AppComponent implements OnInit {
       next: (row) => {
         this.regimeEntries = [row, ...this.regimeEntries];
         this.updateConditionChips();
+        this.loadBusiness();
         this.showRegimeForm = false;
       },
     });
@@ -1137,6 +1305,14 @@ export class AppComponent implements OnInit {
     return account ? account.label : 'Unknown account';
   }
 
+  get selectedTradePositionMetrics(): PositionMetrics | undefined {
+    const positionId = this.selectedTradePositionId || this.tradeDraft?.base_position_id;
+    if (!positionId) {
+      return undefined;
+    }
+    return this.positionMetrics.find((pm) => pm.position.position_id === positionId);
+  }
+
   get latestWeekTradeCount(): number {
     if (!this.metrics?.weekly_juice_by_strategy?.length) {
       return 0;
@@ -1157,6 +1333,8 @@ export class AppComponent implements OnInit {
     const contracts = this.toNumber(this.tradeDraft.contracts);
     const strike = this.toNumber(this.tradeDraft.strike);
     const premium = this.toNumber(this.tradeDraft.premium);
+    const strategy = this.normalizeStrategy(this.tradeDraft.strategy);
+    const requiresBase = strategy === 'CFM';
     const hasBasics =
       !!account &&
       !!this.tradeDraft.trade_datetime &&
@@ -1167,7 +1345,13 @@ export class AppComponent implements OnInit {
       strike !== undefined &&
       !!this.tradeDraft.expiry &&
       premium !== undefined;
-    return hasBasics;
+    if (!hasBasics) {
+      return false;
+    }
+    if (requiresBase && !this.tradeDraft.base_position_id) {
+      return false;
+    }
+    return true;
   }
 
   onPortfolioExpiryRangeChange(): void {
@@ -1199,6 +1383,11 @@ export class AppComponent implements OnInit {
       return;
     }
 
+    if (!this.tradeDraft.strategy) {
+      this.entryError = 'Strategy is required.';
+      return;
+    }
+
     if (!this.tradeDraft.expiry) {
       this.entryError = 'Pick an expiration date.';
       return;
@@ -1207,8 +1396,14 @@ export class AppComponent implements OnInit {
     const contracts = this.toNumber(this.tradeDraft.contracts);
     const strike = this.toNumber(this.tradeDraft.strike);
     const premium = this.toNumber(this.tradeDraft.premium);
+    const strategy = this.normalizeStrategy(this.tradeDraft.strategy);
 
     this.enforceSideForStrategy();
+    if (strategy === 'CFM' && !this.tradeDraft.base_position_id) {
+      this.entryError = 'Select a base position before staging a CFM trade.';
+      return;
+    }
+    const underlying = this.toNumber(this.tradeDraft.underlying);
 
     if (this.tradeDraft.action === 'Open') {
       const maxContracts = this.tradeContractLimit();
@@ -1219,19 +1414,22 @@ export class AppComponent implements OnInit {
       }
     }
 
+    const underlyingPayload =
+      this.tradeDraft.action === 'Close' || this.tradeDraft.action === 'Mark' ? undefined : underlying ?? undefined;
     const staged: LedgerEntryCreate = {
       account,
       // `datetime-local` is a local-time value with no timezone. Sending it as-is
       // avoids shifting the time when converting to UTC via `toISOString()`.
       trade_datetime: this.tradeDraft.trade_datetime,
       ticker,
-      strategy: this.tradeDraft.strategy,
+      strategy: this.normalizeStrategy(this.tradeDraft.strategy),
       action: this.tradeDraft.action,
       side: this.tradeDraft.side,
       contracts: contracts ?? 0,
       strike: strike ?? 0,
       expiry: this.tradeDraft.expiry!,
       premium: premium ?? 0,
+      underlying: underlyingPayload,
       condition: this.tradeDraft.condition,
       base_position_id: this.tradeDraft.base_position_id,
       base_leg_id: this.tradeDraft.base_leg_id,
@@ -1568,11 +1766,11 @@ export class AppComponent implements OnInit {
     const pm = this.positionMetrics.find((p) => p.position.position_id === leg.position_id);
     if (pm) {
       this.tradeDraft.ticker = pm.position.symbol;
-      this.tradeDraft.strategy = pm.position.strategy || this.tradeDraft.strategy;
+      this.tradeDraft.strategy = this.normalizeStrategy(pm.position.strategy || this.tradeDraft.strategy);
       this.tradeDraft.side = 'Call';
       this.tradeTickerLocked = true;
       this.tradeStrategyLocked = true;
-      this.tradeSideLocked = pm.position.strategy === 'CFM';
+      this.tradeSideLocked = this.normalizeStrategy(pm.position.strategy) === 'CFM';
     }
     this.tradeActionLocked = false;
     this.tradeStrikeLocked = false;
@@ -1582,7 +1780,7 @@ export class AppComponent implements OnInit {
     this.updateAvailableOpenShorts();
   }
 
-  onTradeActionChange(action: 'Open' | 'Close'): void {
+  onTradeActionChange(action: 'Open' | 'Close' | 'Mark'): void {
     this.tradeDraft.action = action;
     if (action === 'Open') {
       this.applyTradeContractLimit(true);
@@ -1662,6 +1860,26 @@ export class AppComponent implements OnInit {
     return value ? 'badge-green' : 'badge-red';
   }
 
+  stageClass(stage?: string | null): string {
+    if (!stage) return 'badge-neutral';
+    if (stage === 'PAYCHECK_MODE' || stage === 'MATURE') return 'badge-green';
+    if (stage === 'PROTECTED') return 'badge-yellow';
+    if (stage === 'BUILDING') return 'badge-red';
+    return 'badge-neutral';
+  }
+
+  actionClass(action?: string | null): string {
+    if (!action) return 'badge-neutral';
+    if (action === 'PROTECTION_ROLL_NOW') return 'badge-red';
+    if (action === 'PROTECTION_ROLL') return 'badge-yellow';
+    if (action === 'INCOME_ROLL') return 'badge-green';
+    return 'badge-neutral';
+  }
+
+  toggleLayerSection(layer: number): void {
+    this.layerSectionsOpen[layer] = !this.layerSectionsOpen[layer];
+  }
+
   portfolioPrincipalCost(): number {
     return this.positionMetrics.reduce((sum, pm) => sum + (pm.principal_cost || 0), 0);
   }
@@ -1687,6 +1905,50 @@ export class AppComponent implements OnInit {
     const principal = this.portfolioPrincipalCost();
     if (!principal) return false;
     return this.portfolioLiquidationValue() >= principal;
+  }
+
+  layeredPositionRows(): PositionMetrics[] {
+    return [...this.positionMetrics].sort((a, b) => {
+      const aEmergency = a.emergency_roll ? 1 : 0;
+      const bEmergency = b.emergency_roll ? 1 : 0;
+      if (aEmergency !== bEmergency) {
+        return bEmergency - aEmergency;
+      }
+      const aUnprotected = (a.cushion ?? 0) < 0 ? 1 : 0;
+      const bUnprotected = (b.cushion ?? 0) < 0 ? 1 : 0;
+      if (aUnprotected !== bUnprotected) {
+        return bUnprotected - aUnprotected;
+      }
+      const ratioA = this.positionRiskRatio(a);
+      const ratioB = this.positionRiskRatio(b);
+      if (ratioA !== ratioB) {
+        return ratioA - ratioB;
+      }
+      return (a.position.symbol || '').localeCompare(b.position.symbol || '');
+    });
+  }
+
+  private positionRiskRatio(pm: PositionMetrics): number {
+    const cushion = pm.cushion ?? 0;
+    const reserve = pm.safety_reserve ?? 0;
+    if (!reserve) {
+      return Number.POSITIVE_INFINITY;
+    }
+    return cushion / reserve;
+  }
+
+  private applyPositionMetrics(rows: PositionMetrics[]): void {
+    this.positionMetrics = this.showClosedBases ? rows : rows.filter((pm) => !pm.position.closed_date);
+    if (this.selectedPositionId) {
+      const exists = rows.some((pm) => pm.position.position_id === this.selectedPositionId);
+      if (!exists) {
+        this.selectedPositionId = undefined;
+      }
+    }
+    if (this.selectedPositionId) {
+      this.applyReserveDefault(this.selectedPositionId);
+    }
+    this.updateCashMovementWarning();
   }
 
   reserveCoverageClass(value?: number | null): string {
@@ -1846,8 +2108,13 @@ export class AppComponent implements OnInit {
       strike: entry.strike,
       expiry: entry.expiry,
       premium: entry.premium,
+      underlying: entry.underlying,
+      base_position_id: entry.base_position_id,
+      base_leg_id: entry.base_leg_id,
     };
     this.enforceSideForStrategy(this.tradeDraft);
+    this.selectedTradePositionId = entry.base_position_id;
+    this.selectedTradeBaseLegId = entry.base_leg_id;
     this.entrySuccess = `Editing ${entry.ticker} ${entry.action}.`;
     this.submitError = undefined;
     this.submitSuccess = undefined;
@@ -1867,7 +2134,12 @@ export class AppComponent implements OnInit {
     this.selectedOpenShortKey = undefined;
 
     const actionClean = (row.action || 'Open').toString().toLowerCase();
-    const action: 'Open' | 'Close' = actionClean.includes('close') ? 'Close' : 'Open';
+    let action: 'Open' | 'Close' | 'Mark' = 'Open';
+    if (actionClean.includes('close')) {
+      action = 'Close';
+    } else if (actionClean.includes('mark')) {
+      action = 'Mark';
+    }
     const side: 'Call' | 'Put' = (row.side || 'Call').toString().toLowerCase().includes('put') ? 'Put' : 'Call';
     const tradeDate = row.date ? row.date.toString().substring(0, 16) : '';
 
@@ -1882,6 +2154,7 @@ export class AppComponent implements OnInit {
       strike: row.strike ?? undefined,
       expiry: row.expiry ?? undefined,
       premium: row.premium_buyback ?? undefined,
+      underlying: row.underlying ?? undefined,
       condition: row.condition || row.notes || undefined,
       base_position_id: row.base_position_id,
       base_leg_id: row.base_leg_id,
@@ -1898,7 +2171,7 @@ export class AppComponent implements OnInit {
       this.tradeSideLocked = this.tradeDraft.strategy === 'CFM';
     } else {
       this.selectedTradeBaseLegId = undefined;
-      this.selectedTradePositionId = undefined;
+      this.selectedTradePositionId = this.tradeDraft.base_position_id;
       this.tradeTickerLocked = false;
       this.tradeStrategyLocked = false;
       this.tradeSideLocked = false;
@@ -1947,10 +2220,28 @@ export class AppComponent implements OnInit {
       return;
     }
 
+    if (!this.tradeDraft.strategy) {
+      this.submitError = 'Strategy is required.';
+      return;
+    }
+
     const contracts = this.toNumber(this.tradeDraft.contracts);
     const strike = this.toNumber(this.tradeDraft.strike);
     const premium = this.toNumber(this.tradeDraft.premium);
+    const underlying = this.toNumber(this.tradeDraft.underlying);
+    const strategy = this.normalizeStrategy(this.tradeDraft.strategy);
 
+    if (strategy === 'CFM' && !this.tradeDraft.base_position_id) {
+      this.submitError = 'Select a base position before saving a CFM trade.';
+      return;
+    }
+    if (strategy === 'CFM' && this.tradeDraft.side === 'Call' && underlying === undefined) {
+      this.submitError = 'Underlying price is required for CFM Call trades.';
+      return;
+    }
+
+    const underlyingPayload =
+      this.tradeDraft.action === 'Close' || this.tradeDraft.action === 'Mark' ? undefined : underlying ?? undefined;
     const payload = {
       row_number: this.editingLedgerRowNumber,
       account,
@@ -1963,6 +2254,7 @@ export class AppComponent implements OnInit {
       strike: strike ?? 0,
       expiry: this.tradeDraft.expiry!,
       premium: premium ?? 0,
+      underlying: underlyingPayload,
       base_position_id: this.tradeDraft.base_position_id,
       base_leg_id: this.tradeDraft.base_leg_id,
     };
@@ -2392,17 +2684,17 @@ export class AppComponent implements OnInit {
     this.tickerSuggestions = Array.from(tickers).sort();
   }
 
-  private normalizeStrategy(value: string | undefined): 'Juice Lever' | 'Cashflow Machine' {
+  private normalizeStrategy(value: string | undefined): 'CFM' | 'JL' {
     if (typeof value === 'string') {
       const normalized = value.toLowerCase();
-      if (normalized.includes('juice')) {
-        return 'Juice Lever';
+      if (normalized.includes('juice') || normalized.includes('jl')) {
+        return 'JL';
       }
-      if (normalized.includes('cashflow')) {
-        return 'Cashflow Machine';
+      if (normalized.includes('cashflow') || normalized.includes('cfm')) {
+        return 'CFM';
       }
     }
-    return 'Cashflow Machine';
+    return 'CFM';
   }
 
   private buildBlankDraft(account?: string): LedgerDraft {
@@ -2412,12 +2704,13 @@ export class AppComponent implements OnInit {
       trade_datetime: `${today}T09:30`,
       ticker: '',
       action: 'Open',
-      strategy: 'Cashflow Machine',
+      strategy: 'CFM',
       side: 'Call',
       contracts: undefined,
       strike: undefined,
       expiry: undefined,
       premium: undefined,
+      underlying: undefined,
       condition: undefined,
       base_position_id: undefined,
       base_leg_id: undefined,
@@ -2470,6 +2763,7 @@ export class AppComponent implements OnInit {
       expiry: undefined,
       price: 0,
       underlying_price: undefined,
+      delta: undefined,
       fees: 0,
       amount: 0,
       tag: 'OPEN',
@@ -2585,6 +2879,14 @@ export class AppComponent implements OnInit {
     });
   }
 
+  filteredTradeBaseLegOptions(): BaseLeg[] {
+    const positionId = this.selectedTradePositionId || this.tradeDraft?.base_position_id;
+    if (!positionId) {
+      return this.tradeBaseLegOptions;
+    }
+    return this.tradeBaseLegOptions.filter((leg) => leg.position_id === positionId);
+  }
+
   private buildBlankReserve(): ReserveRow {
     const today = new Date().toISOString().slice(0, 10);
     return {
@@ -2628,7 +2930,7 @@ export class AppComponent implements OnInit {
 
   private enforceSideForStrategy(target?: LedgerDraft): void {
     const draft = target ?? this.tradeDraft;
-    if (draft && draft.strategy === 'Cashflow Machine') {
+    if (draft && this.normalizeStrategy(draft.strategy) === 'CFM') {
       draft.side = 'Call';
     }
   }
@@ -2947,9 +3249,14 @@ export class AppComponent implements OnInit {
 
   private updateAvailableOpenShorts(): void {
     const baseLegId = this.selectedTradeBaseLegId || this.tradeDraft?.base_leg_id;
-    this.availableOpenShorts = baseLegId
-      ? this.openShortOptions.filter((opt) => opt.base_leg_id === baseLegId)
-      : [...this.openShortOptions];
+    const basePositionId = this.selectedTradePositionId || this.tradeDraft?.base_position_id;
+    if (baseLegId) {
+      this.availableOpenShorts = this.openShortOptions.filter((opt) => opt.base_leg_id === baseLegId);
+    } else if (basePositionId) {
+      this.availableOpenShorts = this.openShortOptions.filter((opt) => opt.base_position_id === basePositionId);
+    } else {
+      this.availableOpenShorts = [...this.openShortOptions];
+    }
     if (!this.availableOpenShorts.some((opt) => opt.key === this.selectedOpenShortKey)) {
       this.selectedOpenShortKey = undefined;
       this.tradeActionLocked = false;
@@ -2974,7 +3281,7 @@ export class AppComponent implements OnInit {
       this.tradeDraft.ticker = opt.ticker;
     }
     if (opt.strategy) {
-      this.tradeDraft.strategy = opt.strategy;
+      this.tradeDraft.strategy = this.normalizeStrategy(opt.strategy);
     }
     if (opt.side) {
       this.tradeDraft.side = opt.side as any;
@@ -2986,7 +3293,6 @@ export class AppComponent implements OnInit {
       this.tradeDraft.base_leg_id = opt.base_leg_id;
     }
     this.tradeDraft.action = 'Close';
-    this.tradeActionLocked = true;
     this.tradeDraft.strike = opt.strike ?? this.tradeDraft.strike;
     this.tradeStrikeLocked = opt.strike !== undefined && opt.strike !== null;
     this.tradeDraft.expiry = opt.expiry ?? this.tradeDraft.expiry;

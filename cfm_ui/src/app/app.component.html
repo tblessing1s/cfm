@@ -28,807 +28,196 @@
       Trades & Ledger
     </button>
   </nav>
-  <div class="condition-bar">
-    <button type="button" class="cond-chip overall" [ngClass]="conditionClass(currentMarketCondition)" (click)="openRegimeDialog()">
-      <span>Market</span>
-      <span class="dot" [ngClass]="conditionClass(currentMarketCondition)"></span>
-    </button>
-  </div>
-
   <ng-container *ngIf="activePage === 'business'">
-    <section class="entry-card">
-      <div class="business-panel">
-        <div class="account-summary">
-          <div class="summary-chip">
-            <div class="chip-label">Total account value</div>
-            <div class="chip-value">{{ portfolioSummary?.total_account_value || 0 | number:'1.0-0' }}</div>
-          </div>
-          <div class="summary-chip">
-            <div class="chip-label">Total cash</div>
-            <div class="chip-value">{{ portfolioSummary?.total_cash || 0 | number:'1.0-0' }}</div>
-          </div>
-          <div class="summary-chip">
-            <div class="chip-label">Cash → extrinsic payoff</div>
-            <div class="chip-value">{{ portfolioExtrinsicAllocation() | number:'1.0-0' }}</div>
-          </div>
-          <div class="summary-chip">
-            <div class="chip-label">Cash → intrinsic protection</div>
-            <div class="chip-value">{{ portfolioProtectionAllocation() | number:'1.0-0' }}</div>
-          </div>
-          <div class="summary-chip">
-            <div class="chip-label">Cash reserve (7%)</div>
-            <div class="chip-value">{{ portfolioReserveCash() | number:'1.0-0' }}</div>
-          </div>
-          <div class="summary-chip">
-            <div class="chip-label">Unused cash</div>
-            <div class="chip-value">{{ portfolioUnusedCash() | number:'1.0-0' }}</div>
-            <button type="button" class="btn btn-ghost mt-2" (click)="openCashAllocateModal()">Allocate</button>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <div class="dialog-backdrop" *ngIf="showCashAllocateModal">
-      <div class="dialog">
-        <div class="dialog-head">
-          <h3>Allocate unused cash</h3>
-          <button type="button" class="btn btn-ghost" (click)="closeCashAllocateModal()">Close</button>
-        </div>
-        <div class="transfer-grid">
-          <div class="transfer-panel">
-            <div class="transfer-label">Unused cash</div>
-            <div class="transfer-amount">{{ portfolioUnusedCash() | number:'1.0-0' }}</div>
-            <div class="transfer-sub">Available to allocate</div>
-          </div>
-          <div class="transfer-icon" aria-hidden="true">
-            <svg viewBox="0 0 64 64">
-              <path d="M10 20h36l-8-8M54 44H18l8 8" />
-            </svg>
-          </div>
-          <div class="transfer-panel">
-            <label>
-              <span>Stock</span>
-              <select class="input-control" [(ngModel)]="cashAllocateTicker">
-                <option *ngFor="let row of stockRows" [ngValue]="row.ticker">{{ row.ticker }}</option>
-              </select>
-            </label>
-            <label>
-              <span>Gap type</span>
-              <select class="input-control" [(ngModel)]="cashAllocateType">
-                <option [ngValue]="'extrinsic'">Extrinsic payoff</option>
-                <option [ngValue]="'protection'">Intrinsic protection</option>
-              </select>
-            </label>
-            <label>
-              <span>Gap remaining</span>
-              <input type="number" class="input-control" [value]="selectedAllocationGap()" readonly />
-            </label>
-            <label>
-              <span>Amount (max {{ selectedAllocationMax() | number:'1.0-0' }})</span>
-              <input
-                type="number"
-                class="input-control"
-                [value]="cashAllocateAmount ?? ''"
-                (input)="updateCashAllocateAmount($any($event.target).valueAsNumber)"
-              />
-            </label>
-          </div>
-        </div>
-        <div class="dialog-head">
-          <div class="text-sm text-muted">
-            Existing allocation: {{ allocationFor(cashAllocateTicker || '', cashAllocateType) | number:'1.0-0' }}
-          </div>
-          <button type="button" class="btn-primary" (click)="saveCashAllocation()">Save allocation</button>
-        </div>
-      </div>
-    </div>
-
-    <section class="entry-card">
-      <div class="business-panel">
-        <div class="staged-header">
-          <div>
-            <h2 *ngIf="activeBusinessView === 'snapshot'">Stocks Ranked · Snapshot</h2>
-            <h2 *ngIf="activeBusinessView === 'cashflow'">Stocks Ranked · Cashflow</h2>
-            <p class="text-muted" *ngIf="activeBusinessView === 'snapshot'">Open legs only. Click a row to drill into Stock Detail.</p>
-            <p class="text-muted" *ngIf="activeBusinessView === 'cashflow'">Realized trades only. Click a row to drill into Stock Detail.</p>
-          </div>
-          <div class="entry-actions">
-            <label class="checkbox">
-              <input type="checkbox" [(ngModel)]="showClosedStocks" (change)="loadPortfolio()" />
-              <span>Show closed positions</span>
-            </label>
-          </div>
-        </div>
-        <div class="table-wrapper rounded-lg border border-border bg-surface-2/40">
-          <table *ngIf="activeBusinessView === 'snapshot'"
-            class="w-full border-collapse text-sm [&_th]:px-2 [&_th]:py-2 [&_td]:px-2 [&_td]:py-2 [&_th]:text-left [&_td]:text-left [&_tbody_tr]:border-b [&_tbody_tr]:border-border [&_tbody_tr:nth-child(even)]:bg-surface-2">
-            <thead class="text-xs uppercase tracking-wider text-muted">
-              <tr>
-                <th>Ticker</th>
-                <th>Overall</th>
-                <th>Breaker</th>
-                <th>Reasons</th>
-                <th>Action</th>
-                <th>Countdown</th>
-                <th>Protected</th>
-                <th>Paid off</th>
-                <th>Income generating</th>
-                <th>Extrinsic targets</th>
-                <th>Weekly avg %</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr *ngFor="let row of stockRows" (click)="selectStock(row.ticker)" class="cursor-pointer hover:bg-surface">
-                <td class="font-semibold">{{ row.ticker }}</td>
-                <td>
-                  <span class="overall-dot"
-                        [class.green]="overallStatus(row) === 'green'"
-                        [class.yellow]="overallStatus(row) === 'yellow'"
-                        [class.red]="overallStatus(row) === 'red'"></span>
-                  <span *ngIf="isIncomeGenerating(row)" class="money-icon" title="Generating income">$</span>
-                </td>
-                <td>
-                  <span class="breaker-pill" [ngClass]="breakerPillClass(row)">{{ breakerState(row) }}</span>
-                </td>
-                <td class="text-xs text-muted">{{ breakerReasons(row) }}</td>
-                <td class="text-xs font-semibold">{{ breakerAction(row) }}</td>
-                <td class="text-xs text-muted">{{ breakerCountdown(row) }}</td>
-                <td>
-                  <span class="status-icon" [class.ok]="isProtected(row)" [class.bad]="!isProtected(row)">
-                    <svg *ngIf="isProtected(row)" viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M9.2 16.2 5.5 12.5l1.4-1.4 2.3 2.3 7-7 1.4 1.4z" />
-                    </svg>
-                    <svg *ngIf="!isProtected(row)" viewBox="0 0 24 24" aria-hidden="true">
-                      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" />
-                      <path d="M8 12h8" stroke="currentColor" stroke-width="2" />
-                    </svg>
-                  </span>
-                </td>
-                <td>
-                  <span class="status-icon" [class.ok]="isPaidOff(row)" [class.bad]="!isPaidOff(row)">
-                    <svg *ngIf="isPaidOff(row)" viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M9.2 16.2 5.5 12.5l1.4-1.4 2.3 2.3 7-7 1.4 1.4z" />
-                    </svg>
-                    <svg *ngIf="!isPaidOff(row)" viewBox="0 0 24 24" aria-hidden="true">
-                      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" />
-                      <path d="M8 12h8" stroke="currentColor" stroke-width="2" />
-                    </svg>
-                  </span>
-                </td>
-                <td>
-                  <span class="status-icon" [class.ok]="isIncomeGenerating(row)" [class.bad]="!isIncomeGenerating(row)">
-                    <svg *ngIf="isIncomeGenerating(row)" viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M9.2 16.2 5.5 12.5l1.4-1.4 2.3 2.3 7-7 1.4 1.4z" />
-                    </svg>
-                    <svg *ngIf="!isIncomeGenerating(row)" viewBox="0 0 24 24" aria-hidden="true">
-                      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" />
-                      <path d="M8 12h8" stroke="currentColor" stroke-width="2" />
-                    </svg>
-                  </span>
-                </td>
-                <td>
-                  {{ stockExtrinsicEntryTarget(row) | number:'1.0-0' }}
-                  /
-                  {{ stockExtrinsicExitTarget(row) | number:'1.0-0' }}
-                </td>
-                <td>{{ stockWeeklyReturnPct(row) | number:'1.2-2' }}%</td>
-              </tr>
-              <tr *ngIf="!stockRows.length">
-                <td colspan="11" class="text-center text-muted py-3">No stocks yet.</td>
-              </tr>
-            </tbody>
-          </table>
-          <table *ngIf="activeBusinessView === 'cashflow'"
-            class="w-full border-collapse text-sm [&_th]:px-2 [&_th]:py-2 [&_td]:px-2 [&_td]:py-2 [&_th]:text-left [&_td]:text-left [&_tbody_tr]:border-b [&_tbody_tr]:border-border [&_tbody_tr:nth-child(even)]:bg-surface-2">
-            <thead class="text-xs uppercase tracking-wider text-muted">
-              <tr>
-                <th>Ticker</th>
-                <th>Total income</th>
-                <th>Weekly</th>
-                <th>Monthly</th>
-                <th>Efficiency</th>
-                <th>Consistency</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr *ngFor="let row of stockRows" (click)="selectStock(row.ticker)" class="cursor-pointer hover:bg-surface">
-                <td class="font-semibold">{{ row.ticker }}</td>
-                <td>{{ row.income_total_realized || 0 | number:'1.2-2' }}</td>
-                <td>{{ row.income_rate_weekly || 0 | number:'1.2-2' }}</td>
-                <td>{{ row.income_rate_monthly || 0 | number:'1.2-2' }}</td>
-                <td>{{ row.income_efficiency || 0 | percent:'1.1-1' }}</td>
-                <td>{{ row.income_consistency_pct == null ? '—' : (row.income_consistency_pct | percent:'1.0-0') }}</td>
-              </tr>
-              <tr *ngIf="!stockRows.length">
-                <td colspan="6" class="text-center text-muted py-3">No stocks yet.</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </section>
-
-    <section class="entry-card" *ngIf="selectedStock">
-      <div class="business-panel">
-        <div class="staged-header">
-          <div>
-            <h2>Stock Detail · {{ selectedStock }}</h2>
-            <p>Three pillars and recent trends.</p>
-          </div>
-          <div class="entry-actions">
-            <button type="button" class="btn btn-ghost" (click)="goToTradesForStock(selectedStock!)">View trades</button>
-            <button type="button" class="btn btn-ghost" (click)="selectStock('')">Clear</button>
-          </div>
-        </div>
-        <div *ngIf="stockDetailLoading" class="state small">Loading stock detail…</div>
-        <ng-container *ngIf="!stockDetailLoading && stockDetail">
-          <ng-container *ngIf="activeBusinessView === 'snapshot'; else cashflowDetail">
-            <div class="metric-grid">
-            <div class="metric-card">
-              <div class="metric-label">Base value</div>
-              <div class="metric-value">{{ stockDetail?.base_market_value || 0 | number:'1.2-2' }}</div>
-              <div class="metric-sub">Initial {{ stockDetail?.original_base_value || 0 | number:'1.2-2' }}</div>
-              <div class="metric-help">Current vs initial base premium.</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-label">Intrinsic value</div>
-              <div class="metric-value">{{ stockDetail?.current_base_intrinsic || 0 | number:'1.2-2' }}</div>
-              <div class="metric-sub">Initial {{ stockDetail?.initial_base_intrinsic || 0 | number:'1.2-2' }}</div>
-              <div class="metric-help">Current vs initial intrinsic.</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-label">Extrinsic value</div>
-              <div class="metric-value">
-                {{
-                  ((stockDetail?.initial_base_extrinsic || 0) - (stockDetail?.net_juice_total || 0))
-                    | number:'1.2-2'
-                }}
-              </div>
-              <div class="metric-sub">Initial {{ stockDetail?.initial_base_extrinsic || 0 | number:'1.2-2' }}</div>
-              <div class="metric-sub">Net juice {{ stockDetail?.net_juice_total || 0 | number:'1.2-2' }}</div>
-              <div class="metric-help">Remaining extrinsic after net juice.</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-label">Base + Short Intrinsic</div>
-              <div class="metric-value">{{ stockDetailBasePlusProtectionWithAllocation() | number:'1.2-2' }}</div>
-              <div class="metric-help">
-                Base {{ stockDetail?.current_base_intrinsic || 0 | number:'1.2-2' }}
-                · Short intrinsic (realized) {{ stockDetailShortIntrinsicRealized() | number:'1.2-2' }}
-                · Short intrinsic (unrealized) {{ stockDetailShortIntrinsicUnrealized() | number:'1.2-2' }}
-                <ng-container *ngIf="stockDetailProtectionAllocation() > 0">
-                  · Manual protection {{ stockDetailProtectionAllocation() | number:'1.2-2' }}
-                </ng-container>
-              </div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-label">Circuit breaker</div>
-              <div class="metric-value">
-                <span class="breaker-pill" [ngClass]="stockDetailBreakerPillClass()">{{ stockDetailBreakerState() }}</span>
-              </div>
-              <div class="metric-sub">Breaker {{ stockDetailBreakerStateLabel() }}</div>
-              <div class="metric-sub">Action {{ stockDetailBreakerActionLabel() }}</div>
-              <div class="metric-sub">Reasons {{ stockDetailBreakerReasons() }}</div>
-              <div class="metric-sub">Countdown {{ stockDetailBreakerCountdown() }}</div>
-            </div>
-          </div>
-          </ng-container>
-          <ng-template #cashflowDetail>
-            <div class="metric-grid">
-              <div class="metric-card">
-                <div class="metric-label">Total realized income</div>
-                <div class="metric-value">{{ stockDetail?.income_total_realized || 0 | number:'1.2-2' }}</div>
-                <div class="metric-help">Closed/expired/rolled only.</div>
-              </div>
-              <div class="metric-card">
-                <div class="metric-label">Net juice</div>
-                <div class="metric-value">{{ stockDetail?.net_juice_total || 0 | number:'1.2-2' }}</div>
-                <div class="metric-help">Realized premium.</div>
-              </div>
-              <div class="metric-card">
-                <div class="metric-label">Income efficiency</div>
-                <div class="metric-value">{{ stockDetail?.income_efficiency || 0 | percent:'1.1-1' }}</div>
-                <div class="metric-help">Realized income vs base.</div>
-              </div>
-            </div>
-            <div class="trades-panel">
-              <h3>Income by position</h3>
-              <div *ngIf="!stockDetail?.positions?.length" class="state small">No positions logged.</div>
-              <div class="cards-grid" *ngIf="stockDetail?.positions?.length">
-                <div class="position-card" *ngFor="let pm of stockDetail?.positions">
-                  <div class="card-head">
-                    <div>
-                      <div class="ticker">{{ pm.position.symbol }}</div>
-                      <div class="meta">{{ pm.position.strategy }} · {{ pm.position.base_type }}</div>
-                    </div>
-                  </div>
-                  <div class="metric-row">
-                    <span>Net juice to date</span>
-                    <strong>{{ pm.net_juice_to_date || 0 | number:'1.2-2' }}</strong>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </ng-template>
-        </ng-container>
-      </div>
-    </section>
-
-
-    <section class="entry-card" *ngIf="showAdvanced && activeBusinessView === 'snapshot'">
-      <div class="business-panel">
-        <h2>Account Value</h2>
-        <p class="text-muted">Total net liq with cash vs long-position breakdown.</p>
-        <div class="account-summary">
-          <div class="summary-chip">
-            <div class="chip-label">Total</div>
-            <div class="chip-value">{{ businessMetrics?.nav_current || 0 | number:'1.0-0' }}</div>
-          </div>
-          <div class="summary-chip">
-            <div class="chip-label">Cash</div>
-            <div class="chip-value">{{ businessMetrics?.nav_cash || 0 | number:'1.0-0' }}</div>
-          </div>
-          <div class="summary-chip">
-            <div class="chip-label">Long value</div>
-            <div class="chip-value">{{ businessMetrics?.nav_long_value || 0 | number:'1.0-0' }}</div>
-          </div>
-        </div>
-        <div class="nav-chart-grid" *ngIf="navSeriesForChart().length">
-          <div class="nav-chart">
-            <div class="nav-chart-legend">
-              <span class="legend-label">Total ({{ navSeriesLabel() || '—' }})</span>
-              <span class="legend-key total">Total</span>
-            </div>
-            <svg [attr.viewBox]="'0 0 ' + navChartWidth + ' ' + navChartHeight" preserveAspectRatio="none">
-              <path class="line total" [attr.d]="navPath(navSeriesForChart(), 'nav_total')" />
-            </svg>
-            <div class="nav-axis">
-              <span>{{ navStartLabel() }}</span>
-              <span>{{ navEndLabel() }}</span>
-            </div>
-          </div>
-          <div class="nav-chart">
-            <div class="nav-chart-legend">
-              <span class="legend-label">Cash ({{ navSeriesLabel() || '—' }})</span>
-              <span class="legend-key cash">Cash</span>
-            </div>
-            <svg [attr.viewBox]="'0 0 ' + navChartWidth + ' ' + navChartHeight" preserveAspectRatio="none">
-              <path class="line cash" [attr.d]="navPath(navSeriesForChart(), 'nav_cash')" />
-            </svg>
-            <div class="nav-axis">
-              <span>{{ navStartLabel() }}</span>
-              <span>{{ navEndLabel() }}</span>
-            </div>
-          </div>
-          <div class="nav-chart">
-            <div class="nav-chart-legend">
-              <span class="legend-label">Long value ({{ navSeriesLabel() || '—' }})</span>
-              <span class="legend-key long">Long</span>
-            </div>
-            <svg [attr.viewBox]="'0 0 ' + navChartWidth + ' ' + navChartHeight" preserveAspectRatio="none">
-              <path class="line long" [attr.d]="navPath(navSeriesForChart(), 'nav_long_value')" />
-            </svg>
-            <div class="nav-axis">
-              <span>{{ navStartLabel() }}</span>
-              <span>{{ navEndLabel() }}</span>
-            </div>
-          </div>
-        </div>
-        <div class="text-muted" *ngIf="!navSeriesForChart().length">
-          Add NAV snapshots (cash + long value) to see the trend.
-        </div>
-      </div>
-    </section>
-
-    <section class="entry-card" *ngIf="showAdvanced && activeBusinessView === 'snapshot'">
-      <div class="business-panel">
-        <h2>Base Health</h2>
-        <div class="metric-grid">
-          <div class="metric-card">
-            <div class="metric-label">Portfolio RR</div>
-            <div class="metric-value" [class]="rrClass(businessMetrics?.portfolio_replacement_ratio)">
-              {{ businessMetrics?.portfolio_replacement_ratio || 0 | number: '1.2-2' }}
-            </div>
-            <div class="metric-help">Green ≥1.10; Yellow 1.00–1.09; Red &lt;1.00.</div>
-          </div>
-          <div class="metric-card">
-            <div class="metric-label">Base + Short Intrinsic vs initial (Lowest)</div>
-            <div class="metric-value" [class]="rrClass(businessMetrics?.worst_replacement_ratio)">
-              {{ businessMetrics?.worst_replacement_ratio || 0 | number: '1.2-2' }}
-            </div>
-            <div class="metric-help">Weakest base vs initial cost.</div>
-          </div>
-          <div class="metric-card">
-            <div class="metric-label">Reserve Coverage</div>
-            <div class="metric-value" [class]="reserveCoverageClass(businessMetrics?.reserve_coverage)">
-              {{ businessMetrics?.reserve_coverage || 0 | number: '1.2-2' }}
-            </div>
-            <div class="metric-help">Green ≥1.0; Yellow 0.9–0.99; Red &lt;0.9.</div>
-          </div>
-          <div class="metric-card">
-            <div class="metric-label">Mode</div>
-            <div class="metric-value" [class]="modeClass(businessMetrics?.mode)">
-              {{ businessMetrics?.mode || '—' }}
-            </div>
-            <div class="metric-help">Scale Ready / Maintain / Strengthen.</div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="entry-card" *ngIf="activeBusinessView === 'snapshot' && positionMetrics.length">
-      <div class="business-panel">
-        <h2>Protection & Withdrawable</h2>
-        <p class="text-muted">Answers: protected principal if flattened, and withdrawable income after defense reserve.</p>
-        <div class="metric-grid">
-          <div class="metric-card">
-            <div class="metric-label">Protected Principal (Flatten Now)</div>
-            <div class="metric-value" [class]="protectionClass(portfolioProtectedNow())">
-              {{ portfolioProtectedNow() ? 'Yes' : 'No' }}
-            </div>
-            <div class="metric-help">
-              Liquidation {{ portfolioLiquidationValue() | number:'1.2-2' }} / Initial capital {{ portfolioPrincipalCost() | number:'1.2-2' }}
-            </div>
-          </div>
-          <div class="metric-card">
-            <div class="metric-label">Withdrawable Now</div>
-            <div class="metric-value">
-              {{ portfolioWithdrawableNow() | number:'1.2-2' }}
-            </div>
-            <div class="metric-help">
-              Cushion {{ portfolioCushion() | number:'1.2-2' }} - Safety Reserve {{ portfolioSafetyReserve() | number:'1.2-2' }}
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="entry-card" *ngIf="activeBusinessView === 'snapshot' && positionMetrics.length">
-      <div class="business-panel">
-        <h2>Per-Position Breakdown</h2>
-        <p class="text-muted">Initial capital vs liquidation, cushion, reserve, and withdrawable per base.</p>
-        <div class="table-wrapper rounded-lg border border-border bg-surface-2/40">
-          <table class="w-full border-collapse text-sm [&_th]:px-2 [&_th]:py-2 [&_td]:px-2 [&_td]:py-2 [&_th]:text-left [&_td]:text-left [&_tbody_tr]:border-b [&_tbody_tr]:border-border [&_tbody_tr:nth-child(even)]:bg-surface-2">
-            <thead class="text-xs uppercase tracking-wider text-muted">
-              <tr>
-                <th>Ticker</th>
-                <th>Protected</th>
-                <th>Liquidation</th>
-                <th>Initial capital</th>
-                <th>Cushion</th>
-                <th>Safety Reserve</th>
-                <th>Withdrawable</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr *ngFor="let pm of positionMetrics">
-                <td class="font-semibold">{{ pm.position.symbol }}</td>
-                <td>{{ pm.protected_now ? 'Yes' : 'No' }}</td>
-                <td>{{ pm.liquidation_value || 0 | number:'1.2-2' }}</td>
-                <td>{{ pm.principal_cost || 0 | number:'1.2-2' }}</td>
-                <td>{{ pm.cushion || 0 | number:'1.2-2' }}</td>
-                <td>{{ pm.safety_reserve || 0 | number:'1.2-2' }}</td>
-                <td>{{ pm.withdrawable_now || 0 | number:'1.2-2' }}</td>
-              </tr>
-              <tr *ngIf="!positionMetrics.length">
-                <td colspan="7" class="text-center text-muted py-3">No positions yet.</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </section>
-
-    <section class="entry-card" *ngIf="showAdvanced && activeBusinessView === 'cashflow'">
-      <div class="business-panel">
-        <h2>Short Income</h2>
-        <div class="metric-grid">
-          <div class="metric-card">
-            <div class="metric-label">Net Juice</div>
-            <div class="metric-value">{{ businessMetrics?.weekly_net_juice || 0 | number: '1.2-2' }} (W)</div>
-            <div class="metric-sub">{{ businessMetrics?.monthly_net_juice || 0 | number: '1.2-2' }} (M)</div>
-            <div class="metric-help">Income dollars.</div>
-          </div>
-          <div class="metric-card">
-            <div class="metric-label">Juice Yield %</div>
-            <div class="metric-value" [class]="yieldClass(businessMetrics?.weekly_juice_yield_pct, weeklyYieldTargetPct)">
-              {{ businessMetrics?.weekly_juice_yield_pct || 0 | number: '1.1-1' }}% (W)
-            </div>
-            <div class="metric-sub" [class]="yieldClass(businessMetrics?.monthly_juice_yield_pct, monthlyYieldTargetPct)">
-              {{ businessMetrics?.monthly_juice_yield_pct || 0 | number: '1.1-1' }}% (M)
-            </div>
-            <div class="metric-help">Targets: {{ weeklyYieldTargetPct }}% W / {{ monthlyYieldTargetPct }}% M.</div>
-          </div>
-          <div class="metric-card">
-            <div class="metric-label">Distributable (W)</div>
-            <div class="metric-value" [class]="incomeClass(businessMetrics?.distributable_income_weekly, businessMetrics?.income_allowed_weekly)">
-              {{ businessMetrics?.distributable_income_weekly ?? 0 | number:'1.2-2' }}
-            </div>
-            <div class="metric-sub" [class]="incomeAllowedClass(businessMetrics?.income_allowed_weekly, businessMetrics?.distributable_income_weekly)">
-              {{ businessMetrics?.income_allowed_weekly ? 'Allowed' : 'Blocked' }}
-            </div>
-            <div class="metric-help">After reserve/base top-ups.</div>
-          </div>
-          <div class="metric-card">
-            <div class="metric-label">Distributable (M)</div>
-            <div class="metric-value" [class]="incomeClass(businessMetrics?.distributable_income_monthly, businessMetrics?.income_allowed_monthly)">
-              {{ businessMetrics?.distributable_income_monthly ?? 0 | number:'1.2-2' }}
-            </div>
-            <div class="metric-sub" [class]="incomeAllowedClass(businessMetrics?.income_allowed_monthly, businessMetrics?.distributable_income_monthly)">
-              {{ businessMetrics?.income_allowed_monthly ? 'Allowed' : 'Blocked' }}
-            </div>
-            <div class="metric-help">Monthly paycheck check.</div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="trades-panel" *ngIf="showAdvanced && activeBusinessView === 'snapshot'">
+  <section class="entry-card">
+    <div class="business-panel">
       <div class="staged-header">
         <div>
-          <h2>Per-Position Base Health</h2>
-          <p>Replacement vs initial benchmark, growth, reserve, roll readiness.</p>
+          <h2>Operating Posture Dashboard</h2>
+          <p>Market + stock regimes with ticket health and posture.</p>
         </div>
         <div class="entry-actions">
-          <label class="checkbox">
-            <input type="checkbox" [(ngModel)]="showClosedBases" (change)="loadBusiness()" />
-            <span>Show closed bases</span>
-          </label>
+          <button type="button" class="btn btn-ghost" (click)="openRegimeDialog()">Log regime</button>
           <button type="button" class="btn btn-ghost" (click)="loadBusiness()">Refresh</button>
         </div>
       </div>
-      <div *ngIf="!positionMetrics.length" class="state small">No base positions yet.</div>
-      <div class="cards-grid" *ngIf="positionMetrics.length">
-        <div class="position-card" *ngFor="let pm of positionMetrics">
+      <div *ngIf="!minimalStatuses.length" class="state small">No positions yet.</div>
+      <div class="cards-grid" *ngIf="minimalStatuses.length">
+        <div class="position-card" *ngFor="let row of minimalStatuses">
           <div class="card-head">
             <div>
-              <div class="ticker">{{ pm.position.symbol }}</div>
-              <div class="meta">{{ pm.position.strategy }} · {{ pm.position.base_type }}</div>
+              <div class="ticker">{{ row.symbol }}</div>
+              <div class="meta">Mark Mode</div>
             </div>
-            <div class="ratio" [class.red]="(pm.replacement_ratio || 0) < 1"
-                              [class.yellow]="(pm.replacement_ratio || 0) >= 1 && (pm.replacement_ratio || 0) < 1.1"
-                              [class.green]="(pm.replacement_ratio || 0) >= 1.1">
-              Base+Prot {{ pm.replacement_ratio || 0 | number:'1.2-2' }}
-            </div>
+            <div class="ratio">{{ row.operating_posture }}</div>
+          </div>
+          <div class="metric-section">
+            <span>Regime</span>
+            <span class="info-icon" [attr.data-tooltip]="sectionHelp('regime')">i</span>
           </div>
           <div class="metric-row">
-            <span>Initial base cost</span>
-            <strong>{{ pm.initial_base_cost || 0 | number:'1.2-2' }}</strong>
+            <span>Market Regime</span>
+            <strong>{{ row.market_regime || 'Unknown' }}</strong>
           </div>
           <div class="metric-row">
-            <span>Base value (latest)</span>
-            <strong>{{ pm.base_value || 0 | number:'1.2-2' }}</strong>
+            <span>Stock Regime</span>
+            <strong>{{ row.stock_regime || 'Unknown' }}</strong>
+          </div>
+          <div class="metric-section">
+            <span>Ticket</span>
+            <span class="info-icon" [attr.data-tooltip]="sectionHelp('ticket')">i</span>
           </div>
           <div class="metric-row">
-            <span>Short intrinsic protection</span>
-            <strong>{{ (pm.net_intrinsic_to_date || 0) | number:'1.2-2' }}</strong>
+            <span>Long DTE</span>
+            <strong>{{ row.long_dte_days !== null && row.long_dte_days !== undefined ? row.long_dte_days : '—' }}</strong>
           </div>
           <div class="metric-row">
-            <span>Base + Short Intrinsic</span>
-            <strong>{{ pm.base_plus_protection || ((pm.base_value || 0) + (pm.net_intrinsic_to_date || 0)) | number:'1.2-2' }}</strong>
+            <span>Long Delta</span>
+            <strong>{{ row.long_delta !== null && row.long_delta !== undefined ? (row.long_delta | number:'1.2-2') : '—' }}</strong>
           </div>
           <div class="metric-row">
-            <span>Base health vs initial</span>
-            <strong>{{ pm.base_health_delta || 0 | number:'1.2-2' }}</strong>
+            <span>Ticket Health</span>
+            <strong>{{ row.ticket_health }}</strong>
+          </div>
+          <div class="metric-section">
+            <span>Posture</span>
+            <span class="info-icon" [attr.data-tooltip]="sectionHelp('posture')">i</span>
           </div>
           <div class="metric-row">
-            <span>Base growth</span>
-            <strong>{{ pm.base_growth || 0 | number:'1.2-2' }}</strong>
+            <span>Conviction</span>
+            <strong>{{ row.conviction }}</strong>
           </div>
           <div class="metric-row">
-            <span>Net juice to date</span>
-            <strong>{{ pm.net_juice_to_date || 0 | number:'1.2-2' }}</strong>
+            <span>Operating Posture</span>
+            <strong class="inline-help">
+              {{ row.operating_posture }}
+              <span class="info-icon" [attr.data-tooltip]="postureHelp()">i</span>
+            </strong>
           </div>
           <div class="metric-row">
-            <span>Initial capital</span>
-            <strong>{{ pm.principal_cost || 0 | number:'1.2-2' }}</strong>
+            <span>Defense Tightness</span>
+            <strong class="inline-help">
+              {{ defenseTightness(row.operating_posture) }}
+              <span class="info-icon" [attr.data-tooltip]="defenseHelp()">i</span>
+            </strong>
           </div>
-          <div class="metric-row">
-            <span>Liquidation value</span>
-            <strong>{{ pm.liquidation_value || 0 | number:'1.2-2' }}</strong>
-          </div>
-          <div class="metric-row">
-            <span>Protected now</span>
-            <strong>{{ pm.protected_now ? 'Yes' : 'No' }}</strong>
-          </div>
-          <div class="metric-row">
-            <span>Cushion</span>
-            <strong>{{ pm.cushion || 0 | number:'1.2-2' }}</strong>
-          </div>
-          <div class="metric-row">
-            <span>Short P&L (realized)</span>
-            <strong>{{ pm.short_realized_pnl || 0 | number:'1.2-2' }}</strong>
-          </div>
-          <div class="metric-row">
-            <span>Short P&L (unrealized)</span>
-            <strong>{{ pm.short_unrealized_pnl || 0 | number:'1.2-2' }}</strong>
-          </div>
-          <div class="metric-row">
-            <span>Working juice (open)</span>
-            <strong>{{ pm.working_juice || 0 | number:'1.2-2' }}</strong>
-          </div>
-          <div class="metric-row">
-            <span>Locked juice (closed)</span>
-            <strong>{{ pm.locked_juice || 0 | number:'1.2-2' }}</strong>
-          </div>
-          <div class="metric-row">
-            <span>Weekly locked income</span>
-            <strong>{{ pm.weekly_locked_income || 0 | number:'1.2-2' }}</strong>
-          </div>
-          <div class="metric-row">
-            <span>Safety reserve</span>
-            <strong>{{ pm.safety_reserve || 0 | number:'1.2-2' }}</strong>
-          </div>
-          <div class="metric-row">
-            <span>Withdrawable now</span>
-            <strong>{{ pm.withdrawable_now || 0 | number:'1.2-2' }}</strong>
-          </div>
-          <div class="metric-row" *ngIf="pm.recommended_action">
-            <span>Recommended action</span>
-            <strong>{{ pm.recommended_action }}</strong>
-          </div>
-          <div class="metric-row" *ngIf="pm.open_short_signals?.length">
-            <span>Open shorts</span>
-            <strong>{{ pm.open_short_signals?.length || 0 }}</strong>
-          </div>
-          <div class="metric-sub" *ngFor="let sig of pm.open_short_signals">
-            {{ sig.strike || '-' }} · {{ sig.expiry | date:'yyyy-MM-dd' }} · DTE {{ sig.dte !== undefined && sig.dte !== null ? sig.dte : '-' }}
-            · Capture {{ sig.capture_pct || 0 | percent:'1.0-0' }}
-            · Extrinsic {{ sig.extrinsic_now || 0 | number:'1.2-2' }}
-            · ATM {{ sig.near_atm ? 'Yes' : 'No' }}
-          </div>
-          <div class="metric-row">
-            <span>Reserve (explicit/default)</span>
-            <strong>{{ pm.reserve_cash || 0 | number:'1.2-2' }}</strong>
-          </div>
-          <div class="metric-row">
-            <span>Scale capacity</span>
-            <strong>{{ pm.scale_capacity_units || 0 }}</strong>
-          </div>
-          <div class="metric-row" *ngIf="pm.roll_plan_flag || pm.roll_action_flag">
-            <span>Roll readiness</span>
-            <strong>{{ pm.roll_action_flag ? 'ACTION <=30 DTE' : 'PLAN <=45 DTE' }}</strong>
-          </div>
-        </div>
-      </div>
-    </section>
-  </ng-container>
-
-  <div class="dialog-backdrop" *ngIf="showRegimeDialog">
-    <div class="dialog" [ngClass]="conditionClass(currentMarketCondition)">
-      <div class="dialog-head">
-        <h3>Market & Stock Regimes</h3>
-        <div class="entry-actions">
-          <button type="button" class="btn btn-ghost" [class.btn-primary]="!showRegimeForm" (click)="toggleRegimeForm(false)">View plans</button>
-          <button type="button" class="btn btn-ghost" [class.btn-primary]="showRegimeForm" (click)="toggleRegimeForm(true)">Log regime</button>
-          <button type="button" class="btn btn-ghost" (click)="closeRegimeDialog()">Close</button>
-        </div>
-      </div>
-
-      <ng-container *ngIf="!showRegimeForm; else regimeForm">
-        <div class="mt-2 flex items-center gap-2">
-          <span class="dot" [ngClass]="conditionClass(currentMarketCondition)"></span>
-          <span class="text-sm">Market: {{ currentMarketCondition }}</span>
-        </div>
-        <div class="mt-3">
-          <h4>Open stocks</h4>
-          <div class="text-muted text-sm" *ngIf="!positionMetrics.length">No open bases.</div>
-          <div class="accordion" *ngIf="positionMetrics.length">
-            <div class="accordion-row" *ngFor="let pm of positionMetrics">
-              <div class="accordion-header" (click)="pm['__open'] = !pm['__open']">
-                <span>{{ pm.position.symbol }}</span>
-                <span class="dot" [ngClass]="conditionClass(latestRegimeBySymbol[pm.position.symbol]?.stock_condition || '-')"></span>
-              </div>
-              <div class="accordion-body" *ngIf="pm['__open']">
-                <div class="metric-help">
-                  <ng-container [ngSwitch]="(latestRegimeBySymbol[pm.position.symbol]?.stock_condition || 'RED')">
-                    <span *ngSwitchCase="'GREEN'">
-                      Objective: income + controlled upside. Strike near ATM; roll 1–2 DTE or when extrinsic mostly captured; switch plan if condition worsens. Target per cycle $82.50.
-                    </span>
-                    <span *ngSwitchCase="'YELLOW'">
-                      Objective: balanced protection + income. Slightly defensive strikes; roll 1–2 DTE or when exposed; no aggressive scaling until Green.
-                    </span>
-                    <span *ngSwitchDefault>
-                      Objective: defense / capital preservation. Prioritize defense (deeper ITM ok), stop scaling, consider exit if Red persists; tighten rolls to 1–2 DTE. Income shortfall = defense cost.
-                    </span>
-                  </ng-container>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </ng-container>
-
-      <ng-template #regimeForm>
-        <div class="form-grid">
-          <label>
-            <span>Date</span>
-            <input type="date" class="input-control" [(ngModel)]="regimeDraft.date" />
-          </label>
-          <label>
-            <span>Market condition</span>
-            <select class="input-control" [(ngModel)]="marketConditionDraft">
-              <option [ngValue]="'GREEN'">Green</option>
-              <option [ngValue]="'YELLOW'">Yellow</option>
-              <option [ngValue]="'RED'">Red</option>
-            </select>
-          </label>
-          <label>
-            <span>Stock</span>
-            <select class="input-control" [(ngModel)]="selectedStockForRegime" (ngModelChange)="onStockSelect($event)">
-              <option [ngValue]="'-'">—</option>
-              <option *ngFor="let pm of positionMetrics" [ngValue]="pm.position.symbol">{{ pm.position.symbol }}</option>
-            </select>
-          </label>
-          <label>
-            <span>Stock condition</span>
-            <select class="input-control" [(ngModel)]="stockConditionDraft" [disabled]="selectedStockForRegime === '-'">
-              <option [ngValue]="'-'">—</option>
-              <option [ngValue]="'GREEN'">Green</option>
-              <option [ngValue]="'YELLOW'">Yellow</option>
-              <option [ngValue]="'RED'">Red</option>
-            </select>
-          </label>
-        </div>
-        <div class="entry-actions center mt-2">
-          <button type="button" class="btn-primary" (click)="saveCombinedRegime()">Save</button>
-        </div>
-      </ng-template>
-    </div>
-  </div>
-
-  <div class="dialog-backdrop" *ngIf="showPlanDialog">
-    <div class="dialog">
-      <div class="dialog-head">
-        <h3>Trading Plan</h3>
-        <button type="button" class="btn btn-ghost" (click)="closePlanDialog()">Close</button>
-      </div>
-      <p class="text-muted">Plan text changes with Overall condition.</p>
-      <div class="metric-grid">
-        <div class="metric-card col-span-3">
-          <div class="metric-label">Current plan</div>
-          <div class="metric-value">{{ regimeEntries[0]?.overall_condition || 'RED' }}</div>
           <div class="metric-help">
-            <ng-container [ngSwitch]="regimeEntries[0]?.overall_condition || 'RED'">
-              <span *ngSwitchCase="'GREEN'">
-                Objective: income + controlled upside. Strike near ATM; roll 1–2 DTE or when extrinsic mostly captured; switch plan if condition worsens. Target per cycle $82.50.
-              </span>
-              <span *ngSwitchCase="'YELLOW'">
-                Objective: balanced protection + income. Slightly defensive strikes; roll 1–2 DTE or when exposed; no aggressive scaling until Green.
-              </span>
-              <span *ngSwitchDefault>
-                Objective: defense / capital preservation. Prioritize defense (deeper ITM ok), stop scaling, consider exit if Red persists; tighten rolls to 1–2 DTE. Income shortfall = defense cost.
-              </span>
-            </ng-container>
+            {{ postureGuidance(row.operating_posture) }}
+          </div>
+          <div class="metric-sub">
+            <div class="metric-help">Focus</div>
+            <ul class="focus-list">
+              <li *ngFor="let item of postureFocus(row.operating_posture)">{{ item }}</li>
+            </ul>
+          </div>
+          <div class="metric-section">
+            <span>Performance</span>
+          </div>
+          <div class="metric-row">
+            <span>Weekly Net Juice (expiry week)</span>
+            <strong>{{ row.weekly_net_income_avg !== null && row.weekly_net_income_avg !== undefined ? (row.weekly_net_income_avg | number:'1.2-2') : '—' }}</strong>
+          </div>
+          <div class="metric-row">
+            <span>Weekly Return %</span>
+            <strong>{{ row.weekly_return_pct !== null && row.weekly_return_pct !== undefined ? (row.weekly_return_pct | number:'1.2-2') : '—' }}</strong>
+          </div>
+          <div class="metric-row">
+            <span>Net Juice Since Open</span>
+            <strong>{{ row.net_juice_since_open !== null && row.net_juice_since_open !== undefined ? (row.net_juice_since_open | number:'1.2-2') : '—' }}</strong>
           </div>
         </div>
       </div>
-      <div class="metric-grid mt-4">
-        <div class="metric-card">
-          <div class="metric-label">Target / cycle</div>
-          <div class="metric-value">{{ protection?.target_income || 82.5 | number:'1.2-2' }}</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-label">Latest cycle income</div>
-          <div class="metric-value">{{ protection?.latest_cycle_income || 0 | number:'1.2-2' }}</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-label">Shortfall / Defense cost</div>
-          <div class="metric-value">{{ protection?.shortfall || 0 | number:'1.2-2' }}</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-label">Cumulative income</div>
-          <div class="metric-value">{{ protection?.cumulative_income || 0 | number:'1.2-2' }}</div>
-          <div class="metric-sub">Est. breakeven drop {{ protection?.estimated_break_even_drop || 0 | number:'1.2-2' }}</div>
+    </div>
+  </section>
+</ng-container>
+
+<div class="dialog-backdrop" *ngIf="showRegimeDialog">
+  <div class="dialog" [ngClass]="conditionClass(currentMarketCondition)">
+    <div class="dialog-head">
+      <h3>Market & Stock Regimes</h3>
+      <div class="entry-actions">
+        <button type="button" class="btn btn-ghost" [class.btn-primary]="!showRegimeForm" (click)="toggleRegimeForm(false)">
+          View plans
+        </button>
+        <button type="button" class="btn btn-ghost" [class.btn-primary]="showRegimeForm" (click)="toggleRegimeForm(true)">
+          Log regime
+        </button>
+        <button type="button" class="btn btn-ghost" (click)="closeRegimeDialog()">Close</button>
+      </div>
+    </div>
+
+    <ng-container *ngIf="!showRegimeForm; else regimeForm">
+      <div class="mt-2 flex items-center gap-2">
+        <span class="dot" [ngClass]="conditionClass(currentMarketCondition)"></span>
+        <span class="text-sm">Market: {{ currentMarketCondition }}</span>
+      </div>
+      <div class="mt-3">
+        <h4>Open stocks</h4>
+        <div class="text-muted text-sm" *ngIf="!positionMetrics.length">No open bases.</div>
+        <div class="accordion" *ngIf="positionMetrics.length">
+          <div class="accordion-row" *ngFor="let pm of positionMetrics">
+            <div class="accordion-header" (click)="pm['__open'] = !pm['__open']">
+              <span>{{ pm.position.symbol }}</span>
+              <span class="dot" [ngClass]="conditionClass(latestRegimeBySymbol[pm.position.symbol]?.stock_condition || '-')"></span>
+            </div>
+            <div class="accordion-body" *ngIf="pm['__open']">
+              <div class="metric-help">
+                <ng-container [ngSwitch]="(latestRegimeBySymbol[pm.position.symbol]?.stock_condition || 'RED')">
+                  <span *ngSwitchCase="'GREEN'">
+                    Objective: income + controlled upside. Strike near ATM; roll 1–2 DTE or when extrinsic mostly captured; switch plan if condition worsens.
+                  </span>
+                  <span *ngSwitchCase="'YELLOW'">
+                    Objective: balanced protection + income. Slightly defensive strikes; roll 1–2 DTE or when exposed; no aggressive scaling until Green.
+                  </span>
+                  <span *ngSwitchDefault>
+                    Objective: defense / capital preservation. Prioritize defense (deeper ITM ok), stop scaling, consider exit if Red persists; tighten rolls to 1–2 DTE.
+                  </span>
+                </ng-container>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
-      <p class="text-sm mt-3">
-        Protection comes from staying in the right condition plan and financing the long with consistent short income.
-        In Red, treat shortfall as defense cost and consider exit if Red persists.
-      </p>
-    </div>
-  </div>
+    </ng-container>
 
-  <ng-container *ngIf="activePage === 'data'">
+    <ng-template #regimeForm>
+      <div class="form-grid">
+        <label>
+          <span>Date</span>
+          <input type="date" class="input-control" [(ngModel)]="regimeDraft.date" />
+        </label>
+        <label>
+          <span>Market condition</span>
+          <select class="input-control" [(ngModel)]="marketConditionDraft">
+            <option [ngValue]="'GREEN'">Green</option>
+            <option [ngValue]="'YELLOW'">Yellow</option>
+            <option [ngValue]="'RED'">Red</option>
+          </select>
+        </label>
+        <label>
+          <span>Stock</span>
+          <select class="input-control" [(ngModel)]="selectedStockForRegime" (ngModelChange)="onStockSelect($event)">
+            <option [ngValue]="'-'">—</option>
+            <option *ngFor="let pm of positionMetrics" [ngValue]="pm.position.symbol">{{ pm.position.symbol }}</option>
+          </select>
+        </label>
+        <label>
+          <span>Stock condition</span>
+          <select class="input-control" [(ngModel)]="stockConditionDraft" [disabled]="selectedStockForRegime === '-'">
+            <option [ngValue]="'GREEN'">Green</option>
+            <option [ngValue]="'YELLOW'">Yellow</option>
+            <option [ngValue]="'RED'">Red</option>
+          </select>
+        </label>
+      </div>
+      <div class="entry-actions center mt-2">
+        <button type="button" class="btn-primary" (click)="saveCombinedRegime()">Save</button>
+      </div>
+    </ng-template>
+  </div>
+</div>
+
+<ng-container *ngIf="activePage === 'data'">
     <section class="entry-card">
         <div class="business-forms">
           <h3>Input new facts</h3>
@@ -1056,6 +445,14 @@
             </label>
             <label>
               <span class="label-row">
+                Delta (optional)
+                <button type="button" class="help-icon" (click)="toggleHelp('leg_delta')">?</button>
+              </span>
+              <input type="number" step="0.01" class="input-control" [(ngModel)]="baseLegDraft.delta" />
+              <div class="help-pop" *ngIf="visibleHelp === 'leg_delta'">Optional long delta for strength scoring (>= 0.85 = healthy).</div>
+            </label>
+            <label>
+              <span class="label-row">
                 Price
                 <button type="button" class="help-icon" (click)="toggleHelp('leg_price')">?</button>
               </span>
@@ -1142,6 +539,19 @@
       </div>
 
       <div class="entry-grid">
+        <label *ngIf="positionMetrics.length">
+          <span>Base position</span>
+          <select
+            class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+            [(ngModel)]="selectedTradePositionId"
+            (ngModelChange)="onTradePositionSelect($event)"
+          >
+            <option [ngValue]="undefined">— None —</option>
+            <option *ngFor="let pm of positionMetrics" [ngValue]="pm.position.position_id">
+              {{ pm.position.symbol }} · {{ pm.position.strategy }} ({{ pm.position.base_type }})
+            </option>
+          </select>
+        </label>
         <label *ngIf="tradeBaseLegOptions.length">
           <span>Base leg</span>
           <select
@@ -1150,7 +560,7 @@
             (ngModelChange)="onTradeBaseLegSelect($event)"
           >
             <option [ngValue]="undefined">— None —</option>
-            <option *ngFor="let leg of tradeBaseLegOptions" [ngValue]="leg.base_leg_id">
+            <option *ngFor="let leg of filteredTradeBaseLegOptions()" [ngValue]="leg.base_leg_id">
               {{ tradeBaseLegLabel(leg) }}
             </option>
           </select>
@@ -1180,6 +590,7 @@
             >
               <option [ngValue]="'Open'">Open</option>
               <option [ngValue]="'Close'">Close</option>
+              <option [ngValue]="'Mark'">Mark</option>
             </select>
           </label>
 
@@ -1192,8 +603,8 @@
               name="entryStrategy"
               (ngModelChange)="onStrategyChange($event)"
             >
-              <option [ngValue]="'Cashflow Machine'">Cashflow Machine</option>
-              <option [ngValue]="'Juice Lever'">Juice Lever</option>
+              <option [ngValue]="'CFM'">CFM</option>
+              <option [ngValue]="'JL'">JL</option>
             </select>
           </label>
         </ng-container>
@@ -1214,7 +625,7 @@
             class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30 disabled:opacity-60"
             [(ngModel)]="tradeDraft.side"
             name="entrySide"
-            [disabled]="tradeSideLocked || tradeDraft.strategy === 'Cashflow Machine'"
+            [disabled]="tradeSideLocked || tradeDraft.strategy === 'CFM'"
           >
             <option [ngValue]="'Call'">Call</option>
             <option [ngValue]="'Put'">Put</option>
@@ -1285,6 +696,8 @@
             name="entryPremium"
           />
         </label>
+
+
 
         <label>
           <span>Trade date & time</span>
@@ -1386,6 +799,7 @@
               <th>Strike</th>
               <th>Expiry</th>
               <th>Premium</th>
+              <th>Underlying</th>
               <th></th>
             </tr>
           </thead>
@@ -1401,6 +815,7 @@
               <td>{{ trade.strike }}</td>
               <td>{{ trade.expiry | date: 'mediumDate' }}</td>
               <td>{{ trade.premium }}</td>
+              <td>{{ trade.underlying }}</td>
               <td class="flex gap-2">
                 <button
                   type="button"
