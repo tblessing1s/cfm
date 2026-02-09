@@ -1,0 +1,32 @@
+<div class="popover">
+  <button type="button" class="info-button" (click)="toggle()" aria-label="Circuit breaker details">
+    i
+  </button>
+  <div *ngIf="open" class="panel">
+    <div class="panel-title">Circuit Breakers</div>
+    <div class="panel-rollup">
+      <span class="rollup-label">Rollup</span>
+      <app-status-badge
+        [label]="statusLabels[status]"
+        [tone]="statusTone()"
+      ></app-status-badge>
+    </div>
+    <div class="panel-section">
+      <div class="panel-section-title">Signals</div>
+      <div class="panel-row" *ngFor="let item of questions">
+        <div class="panel-label">
+          {{ item.label }}
+          <span class="panel-level" [ngClass]="item.level === 'exit' ? 'exit' : 'warning'">
+            {{ item.level === 'exit' ? 'Exit' : 'Warning' }}
+          </span>
+        </div>
+        <div class="panel-text">{{ item.meaning }}</div>
+        <div class="panel-answer">{{ answerForKey(item.key) }}</div>
+      </div>
+    </div>
+    <div class="panel-summary">
+      <div>Warning hit: {{ warningHit ? 'Yes' : 'No' }}</div>
+      <div>Exit hit: {{ exitHit ? 'Yes' : 'No' }}</div>
+    </div>
+  </div>
+</div>

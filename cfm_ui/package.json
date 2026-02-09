@@ -6,7 +6,7 @@
     "ng": "ng",
     "start": "node --no-deprecation ./node_modules/@angular/cli/bin/ng serve",
     "build": "ng build",
-    "test": "echo \"No tests configured\""
+    "test": "ts-node tests/cfm-dashboard.utils.spec.ts"
   },
   "dependencies": {
     "@angular/animations": "~16.2.0",

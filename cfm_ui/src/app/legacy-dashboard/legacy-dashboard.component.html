@@ -1,0 +1,1299 @@
+<div class="screen">
+  <header>
+    <h1>CFM Juice Dashboard</h1>
+    <p>Realtime analytics powered by the FastAPI backend.</p>
+    <div class="account-selector" *ngIf="accounts.length">
+      <label for="account-select">Account (Travis / Christie)</label>
+      <select
+        id="account-select"
+        class="input-control mt-1 rounded-full px-4"
+        [value]="selectedAccount"
+        (change)="onAccountChange($event.target.value)"
+      >
+        <option *ngFor="let account of accounts" [value]="account.name">
+          {{ account.label }}
+        </option>
+      </select>
+    </div>
+  </header>
+
+  <nav class="page-nav">
+    <button type="button" class="btn-nav" [class.active]="activePage === 'business'" (click)="setPage('business')">
+      Business Dashboard
+    </button>
+    <button type="button" class="btn-nav" [class.active]="activePage === 'data'" (click)="setPage('data')">
+      Data Input
+    </button>
+    <button type="button" class="btn-nav" [class.active]="activePage === 'trades'" (click)="setPage('trades')">
+      Trades & Ledger
+    </button>
+  </nav>
+  <ng-container *ngIf="activePage === 'business'">
+  <section class="entry-card">
+    <div class="business-panel">
+      <div class="staged-header">
+        <div>
+          <h2>Operating Posture Dashboard</h2>
+          <p>Market + stock regimes with ticket health and posture.</p>
+        </div>
+        <div class="entry-actions">
+          <button type="button" class="btn btn-ghost" (click)="openRegimeDialog()">Log regime</button>
+          <button type="button" class="btn btn-ghost" (click)="loadBusiness()">Refresh</button>
+        </div>
+      </div>
+      <div *ngIf="!minimalStatuses.length" class="state small">No positions yet.</div>
+      <div class="cards-grid" *ngIf="minimalStatuses.length">
+        <div class="position-card" *ngFor="let row of minimalStatuses">
+          <div class="card-head">
+            <div>
+              <div class="ticker">{{ row.symbol }}</div>
+              <div class="meta">Mark Mode</div>
+            </div>
+            <div class="ratio">{{ row.operating_posture }}</div>
+          </div>
+          <div class="metric-section">
+            <span>Regime</span>
+            <span class="info-icon" [attr.data-tooltip]="sectionHelp('regime')">i</span>
+          </div>
+          <div class="metric-row">
+            <span>Market Regime</span>
+            <strong>{{ row.market_regime || 'Unknown' }}</strong>
+          </div>
+          <div class="metric-row">
+            <span>Stock Regime</span>
+            <strong>{{ row.stock_regime || 'Unknown' }}</strong>
+          </div>
+          <div class="metric-section">
+            <span>Ticket</span>
+            <span class="info-icon" [attr.data-tooltip]="sectionHelp('ticket')">i</span>
+          </div>
+          <div class="metric-row">
+            <span>Long DTE</span>
+            <strong>{{ row.long_dte_days !== null && row.long_dte_days !== undefined ? row.long_dte_days : '—' }}</strong>
+          </div>
+          <div class="metric-row">
+            <span>Long Delta</span>
+            <strong>{{ row.long_delta !== null && row.long_delta !== undefined ? (row.long_delta | number:'1.2-2') : '—' }}</strong>
+          </div>
+          <div class="metric-row">
+            <span>Ticket Health</span>
+            <strong>{{ row.ticket_health }}</strong>
+          </div>
+          <div class="metric-section">
+            <span>Posture</span>
+            <span class="info-icon" [attr.data-tooltip]="sectionHelp('posture')">i</span>
+          </div>
+          <div class="metric-row">
+            <span>Conviction</span>
+            <strong>{{ row.conviction }}</strong>
+          </div>
+          <div class="metric-row">
+            <span>Operating Posture</span>
+            <strong class="inline-help">
+              {{ row.operating_posture }}
+              <span class="info-icon" [attr.data-tooltip]="postureHelp()">i</span>
+            </strong>
+          </div>
+          <div class="metric-row">
+            <span>Defense Tightness</span>
+            <strong class="inline-help">
+              {{ defenseTightness(row.operating_posture) }}
+              <span class="info-icon" [attr.data-tooltip]="defenseHelp()">i</span>
+            </strong>
+          </div>
+          <div class="metric-help">
+            {{ postureGuidance(row.operating_posture) }}
+          </div>
+          <div class="metric-sub">
+            <div class="metric-help">Focus</div>
+            <ul class="focus-list">
+              <li *ngFor="let item of postureFocus(row.operating_posture)">{{ item }}</li>
+            </ul>
+          </div>
+          <div class="metric-section">
+            <span>Performance</span>
+          </div>
+          <div class="metric-row">
+            <span>Weekly Net Juice (expiry week)</span>
+            <strong>{{ row.weekly_net_income_avg !== null && row.weekly_net_income_avg !== undefined ? (row.weekly_net_income_avg | number:'1.2-2') : '—' }}</strong>
+          </div>
+          <div class="metric-row">
+            <span>Weekly Return %</span>
+            <strong>{{ row.weekly_return_pct !== null && row.weekly_return_pct !== undefined ? (row.weekly_return_pct | number:'1.2-2') : '—' }}</strong>
+          </div>
+          <div class="metric-row">
+            <span>Net Juice Since Open</span>
+            <strong>{{ row.net_juice_since_open !== null && row.net_juice_since_open !== undefined ? (row.net_juice_since_open | number:'1.2-2') : '—' }}</strong>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</ng-container>
+
+<div class="dialog-backdrop" *ngIf="showRegimeDialog">
+  <div class="dialog" [ngClass]="conditionClass(currentMarketCondition)">
+    <div class="dialog-head">
+      <h3>Market & Stock Regimes</h3>
+      <div class="entry-actions">
+        <button type="button" class="btn btn-ghost" [class.btn-primary]="!showRegimeForm" (click)="toggleRegimeForm(false)">
+          View plans
+        </button>
+        <button type="button" class="btn btn-ghost" [class.btn-primary]="showRegimeForm" (click)="toggleRegimeForm(true)">
+          Log regime
+        </button>
+        <button type="button" class="btn btn-ghost" (click)="closeRegimeDialog()">Close</button>
+      </div>
+    </div>
+
+    <ng-container *ngIf="!showRegimeForm; else regimeForm">
+      <div class="mt-2 flex items-center gap-2">
+        <span class="dot" [ngClass]="conditionClass(currentMarketCondition)"></span>
+        <span class="text-sm">Market: {{ currentMarketCondition }}</span>
+      </div>
+      <div class="mt-3">
+        <h4>Open stocks</h4>
+        <div class="text-muted text-sm" *ngIf="!positionMetrics.length">No open bases.</div>
+        <div class="accordion" *ngIf="positionMetrics.length">
+          <div class="accordion-row" *ngFor="let pm of positionMetrics">
+            <div class="accordion-header" (click)="pm['__open'] = !pm['__open']">
+              <span>{{ pm.position.symbol }}</span>
+              <span class="dot" [ngClass]="conditionClass(latestRegimeBySymbol[pm.position.symbol]?.stock_condition || '-')"></span>
+            </div>
+            <div class="accordion-body" *ngIf="pm['__open']">
+              <div class="metric-help">
+                <ng-container [ngSwitch]="(latestRegimeBySymbol[pm.position.symbol]?.stock_condition || 'RED')">
+                  <span *ngSwitchCase="'GREEN'">
+                    Objective: income + controlled upside. Strike near ATM; roll 1–2 DTE or when extrinsic mostly captured; switch plan if condition worsens.
+                  </span>
+                  <span *ngSwitchCase="'YELLOW'">
+                    Objective: balanced protection + income. Slightly defensive strikes; roll 1–2 DTE or when exposed; no aggressive scaling until Green.
+                  </span>
+                  <span *ngSwitchDefault>
+                    Objective: defense / capital preservation. Prioritize defense (deeper ITM ok), stop scaling, consider exit if Red persists; tighten rolls to 1–2 DTE.
+                  </span>
+                </ng-container>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </ng-container>
+
+    <ng-template #regimeForm>
+      <div class="form-grid">
+        <label>
+          <span>Date</span>
+          <input type="date" class="input-control" [(ngModel)]="regimeDraft.date" />
+        </label>
+        <label>
+          <span>Market condition</span>
+          <select class="input-control" [(ngModel)]="marketConditionDraft">
+            <option [ngValue]="'GREEN'">Green</option>
+            <option [ngValue]="'YELLOW'">Yellow</option>
+            <option [ngValue]="'RED'">Red</option>
+          </select>
+        </label>
+        <label>
+          <span>Stock</span>
+          <select class="input-control" [(ngModel)]="selectedStockForRegime" (ngModelChange)="onStockSelect($event)">
+            <option [ngValue]="'-'">—</option>
+            <option *ngFor="let pm of positionMetrics" [ngValue]="pm.position.symbol">{{ pm.position.symbol }}</option>
+          </select>
+        </label>
+        <label>
+          <span>Stock condition</span>
+          <select class="input-control" [(ngModel)]="stockConditionDraft" [disabled]="selectedStockForRegime === '-'">
+            <option [ngValue]="'GREEN'">Green</option>
+            <option [ngValue]="'YELLOW'">Yellow</option>
+            <option [ngValue]="'RED'">Red</option>
+          </select>
+        </label>
+      </div>
+      <div class="entry-actions center mt-2">
+        <button type="button" class="btn-primary" (click)="saveCombinedRegime()">Save</button>
+      </div>
+    </ng-template>
+  </div>
+</div>
+
+<ng-container *ngIf="activePage === 'data'">
+    <section class="entry-card">
+        <div class="business-forms">
+          <h3>Input new facts</h3>
+          <label class="select-position" *ngIf="positionMetrics.length && selectedDataForm === 'leg'">
+            <span>Select base position</span>
+            <select class="input-control" [(ngModel)]="selectedPositionId" (ngModelChange)="onPositionSelect($event)">
+              <option [ngValue]="undefined">— Choose a base —</option>
+              <option *ngFor="let pm of positionMetrics" [ngValue]="pm.position.position_id">
+                {{ pm.position.symbol }} · {{ pm.position.strategy }} ({{ pm.position.base_type }})
+              </option>
+            </select>
+          </label>
+        <div class="data-form-picker">
+          <label>Select what to add</label>
+          <div class="picker-options">
+            <button type="button" class="btn-nav" [class.active]="selectedDataForm === 'nav'" (click)="setDataForm('nav')">
+              Account value snapshot
+            </button>
+            <button type="button" class="btn-nav" [class.active]="selectedDataForm === 'base'" (click)="setDataForm('base')">
+              Base position
+            </button>
+            <button type="button" class="btn-nav" [class.active]="selectedDataForm === 'leg'" (click)="setDataForm('leg')">
+              Base leg
+            </button>
+          </div>
+          <p class="help-text">{{ dataFormHelp[selectedDataForm]?.when }}</p>
+        </div>
+
+        <div class="form-grid">
+          <div class="form-card" *ngIf="selectedDataForm === 'nav'">
+            <h4>Account value snapshot (NAV)</h4>
+            <label>Date <input type="date" class="input-control" [(ngModel)]="navDraft.date" /></label>
+            <label>
+              <span class="label-row">
+                Cash on hand
+                <button type="button" class="help-icon" (click)="toggleHelp('nav_cash')">?</button>
+              </span>
+              <input
+                type="number"
+                class="input-control"
+                [(ngModel)]="navCash"
+                (ngModelChange)="recomputeNavTotal()"
+              />
+              <div class="help-pop" *ngIf="visibleHelp === 'nav_cash'">{{ fieldHelp.nav_cash }}</div>
+            </label>
+            <label>
+              <span class="label-row">
+                Long positions value (exclude shorts)
+                <button type="button" class="help-icon" (click)="toggleHelp('nav_positions')">?</button>
+              </span>
+              <input
+                type="number"
+                class="input-control"
+                [(ngModel)]="navPositions"
+                (ngModelChange)="recomputeNavTotal()"
+              />
+              <div class="help-pop" *ngIf="visibleHelp === 'nav_positions'">{{ fieldHelp.nav_positions }}</div>
+            </label>
+            <label>
+              <span class="label-row">
+                Liabilities / margin
+                <button type="button" class="help-icon" (click)="toggleHelp('nav_liabilities')">?</button>
+              </span>
+              <input
+                type="number"
+                class="input-control"
+                [(ngModel)]="navLiabilities"
+                (ngModelChange)="recomputeNavTotal()"
+              />
+              <div class="help-pop" *ngIf="visibleHelp === 'nav_liabilities'">{{ fieldHelp.nav_liabilities }}</div>
+            </label>
+            <label>
+              <span class="label-row">
+                Account value (NAV)
+                <button type="button" class="help-icon" (click)="toggleHelp('nav_nav')">?</button>
+              </span>
+              <input
+                type="number"
+                class="input-control"
+                [value]="navDraft.nav_total"
+                readonly
+              />
+              <div class="help-pop" *ngIf="visibleHelp === 'nav_nav'">{{ fieldHelp.nav_nav }}</div>
+            </label>
+            <label>
+              <span class="label-row">
+                Deposits
+                <button type="button" class="help-icon" (click)="toggleHelp('nav_deposits')">?</button>
+              </span>
+              <input
+                type="number"
+                class="input-control"
+                [(ngModel)]="navDraft.deposits"
+              />
+              <div class="help-pop" *ngIf="visibleHelp === 'nav_deposits'">{{ fieldHelp.nav_deposits }}</div>
+            </label>
+            <label>
+              <span class="label-row">
+                Withdrawals
+                <button type="button" class="help-icon" (click)="toggleHelp('nav_withdrawals')">?</button>
+              </span>
+              <input
+                type="number"
+                class="input-control"
+                [(ngModel)]="navDraft.withdrawals"
+              />
+              <div class="help-pop" *ngIf="visibleHelp === 'nav_withdrawals'">{{ fieldHelp.nav_withdrawals }}</div>
+            </label>
+            <button type="button" class="btn-primary mt-2" (click)="submitNavSnapshot()">Save NAV</button>
+          </div>
+
+
+          <div class="form-card" *ngIf="selectedDataForm === 'base'">
+            <h4>Base position</h4>
+            <label *ngIf="positionMetrics.length">
+              <span class="label-row">Select base to close (optional)</span>
+              <select class="input-control" [(ngModel)]="closingBaseId" (ngModelChange)="onBaseSelectForClose($event)">
+                <option [ngValue]="undefined">— New base —</option>
+                <option *ngFor="let pm of positionMetrics" [ngValue]="pm.position.position_id">
+                  {{ pm.position.symbol }} · {{ pm.position.strategy }} ({{ pm.position.base_type }})
+                </option>
+              </select>
+            </label>
+            <label>
+              <span class="label-row">
+                Symbol
+                <button type="button" class="help-icon" (click)="toggleHelp('base_symbol')">?</button>
+              </span>
+              <input type="text" class="input-control" [(ngModel)]="baseDraft.symbol" [disabled]="!!closingBaseId" />
+              <div class="help-pop" *ngIf="visibleHelp === 'base_symbol'">{{ fieldHelp.base_symbol }}</div>
+            </label>
+            <label>
+              <span class="label-row">
+                Strategy
+                <button type="button" class="help-icon" (click)="toggleHelp('base_strategy')">?</button>
+              </span>
+              <select class="input-control" [(ngModel)]="baseDraft.strategy" [disabled]="!!closingBaseId">
+                <option *ngFor="let opt of strategyOptions" [ngValue]="opt">{{ opt }}</option>
+              </select>
+              <div class="help-pop" *ngIf="visibleHelp === 'base_strategy'">{{ fieldHelp.base_strategy }}</div>
+            </label>
+            <label>
+              <span class="label-row">
+                Base type
+                <button type="button" class="help-icon" (click)="toggleHelp('base_type')">?</button>
+              </span>
+              <select class="input-control" [(ngModel)]="baseDraft.base_type" [disabled]="!!closingBaseId">
+                <option *ngFor="let opt of baseTypeOptions" [ngValue]="opt">{{ opt }}</option>
+              </select>
+              <div class="help-pop" *ngIf="visibleHelp === 'base_type'">{{ fieldHelp.base_type }}</div>
+            </label>
+            <label>
+              <span class="label-row">
+                Opened date
+                <button type="button" class="help-icon" (click)="toggleHelp('base_opened')">?</button>
+              </span>
+              <input type="date" class="input-control" [(ngModel)]="baseDraft.opened_date" [disabled]="!!closingBaseId" />
+              <div class="help-pop" *ngIf="visibleHelp === 'base_opened'">{{ fieldHelp.base_opened }}</div>
+            </label>
+            <label>
+              <span class="label-row">
+                Closed date (optional)
+                <button type="button" class="help-icon" (click)="toggleHelp('base_closed')">?</button>
+              </span>
+              <input type="date" class="input-control" [(ngModel)]="baseDraft.closed_date" />
+              <div class="help-pop" *ngIf="visibleHelp === 'base_closed'">Set when this base is retired; closed bases are hidden from selections.</div>
+            </label>
+            <button type="button" class="btn-primary mt-2" (click)="submitBasePosition()">
+              {{ closingBaseId ? 'Close base' : 'Save base' }}
+            </button>
+          </div>
+
+          <div class="form-card" *ngIf="selectedDataForm === 'leg'">
+            <h4>Base leg</h4>
+            <label>
+              <span class="label-row">Base leg</span>
+              <select class="input-control" [(ngModel)]="selectedBaseLegId" (ngModelChange)="onBaseLegSelect($event)">
+                <option [ngValue]="''">— New base leg —</option>
+                <option *ngFor="let leg of baseLegOptions" [ngValue]="leg.base_leg_id">
+                  {{ leg.base_leg_id }} · {{ leg.date | date:'yyyy-MM-dd' }}
+                </option>
+              </select>
+            </label>
+            <label>
+              <span class="label-row">
+                Position ID
+                <button type="button" class="help-icon" (click)="toggleHelp('leg_position')">?</button>
+              </span>
+              <input type="text" class="input-control" [(ngModel)]="baseLegDraft.position_id" [disabled]="true" />
+              <div class="help-pop" *ngIf="visibleHelp === 'leg_position'">{{ fieldHelp.leg_position }}</div>
+            </label>
+            <label>Date & time
+              <input type="datetime-local" class="input-control" [(ngModel)]="baseLegDateTime" (ngModelChange)="onBaseLegDateTimeChange($event)" />
+            </label>
+            <label>
+              <span class="label-row">
+                Instrument
+                <button type="button" class="help-icon" (click)="toggleHelp('leg_instrument')">?</button>
+              </span>
+              <select class="input-control" [(ngModel)]="baseLegDraft.instrument_type" (ngModelChange)="recomputeBaseLegAmount()">
+                <option *ngFor="let opt of legInstrumentOptions" [ngValue]="opt">{{ opt }}</option>
+              </select>
+              <div class="help-pop" *ngIf="visibleHelp === 'leg_instrument'">{{ fieldHelp.leg_instrument }}</div>
+            </label>
+            <label>
+              <span class="label-row">
+                Side
+                <button type="button" class="help-icon" (click)="toggleHelp('leg_side')">?</button>
+              </span>
+              <select class="input-control" [(ngModel)]="baseLegDraft.side" (ngModelChange)="recomputeBaseLegAmount()">
+                <option *ngFor="let opt of legSideOptions" [ngValue]="opt">{{ opt }}</option>
+              </select>
+              <div class="help-pop" *ngIf="visibleHelp === 'leg_side'">{{ fieldHelp.leg_side }}</div>
+            </label>
+            <label>Qty <input type="number" class="input-control" [(ngModel)]="baseLegDraft.quantity" (ngModelChange)="recomputeBaseLegAmount()" /></label>
+            <label>Strike <input type="number" class="input-control" [(ngModel)]="baseLegDraft.strike" (ngModelChange)="recomputeBaseLegAmount()" /></label>
+            <label>Expiry <input type="date" class="input-control" [(ngModel)]="baseLegDraft.expiry" /></label>
+            <label>
+              <span class="label-row">
+                Underlying price
+                <button type="button" class="help-icon" (click)="toggleHelp('leg_underlying')">?</button>
+              </span>
+              <input type="number" class="input-control" [(ngModel)]="baseLegDraft.underlying_price" (ngModelChange)="recomputeBaseLegAmount()" />
+              <div class="help-pop" *ngIf="visibleHelp === 'leg_underlying'">{{ fieldHelp.leg_underlying }}</div>
+            </label>
+            <label>
+              <span class="label-row">
+                Delta (optional)
+                <button type="button" class="help-icon" (click)="toggleHelp('leg_delta')">?</button>
+              </span>
+              <input type="number" step="0.01" class="input-control" [(ngModel)]="baseLegDraft.delta" />
+              <div class="help-pop" *ngIf="visibleHelp === 'leg_delta'">Optional long delta for strength scoring (>= 0.85 = healthy).</div>
+            </label>
+            <label>
+              <span class="label-row">
+                Price
+                <button type="button" class="help-icon" (click)="toggleHelp('leg_price')">?</button>
+              </span>
+              <input type="number" class="input-control" [(ngModel)]="baseLegDraft.price" (ngModelChange)="recomputeBaseLegAmount()" />
+              <div class="help-pop" *ngIf="visibleHelp === 'leg_price'">{{ fieldHelp.leg_price }}</div>
+            </label>
+            <label>
+              <span class="label-row">
+                Fees
+                <button type="button" class="help-icon" (click)="toggleHelp('leg_fees')">?</button>
+              </span>
+              <input type="number" class="input-control" [(ngModel)]="baseLegDraft.fees" (ngModelChange)="recomputeBaseLegAmount()" />
+              <div class="help-pop" *ngIf="visibleHelp === 'leg_fees'">{{ fieldHelp.leg_fees }}</div>
+            </label>
+            <label>
+              <span class="label-row">
+                Amount
+                <button type="button" class="help-icon" (click)="toggleHelp('leg_amount')">?</button>
+              </span>
+              <input type="number" class="input-control" [(ngModel)]="baseLegDraft.amount" readonly />
+              <div class="help-pop" *ngIf="visibleHelp === 'leg_amount'">{{ fieldHelp.leg_amount }}</div>
+            </label>
+            <label>
+              <span class="label-row">
+                Intrinsic portion
+                <button type="button" class="help-icon" (click)="toggleHelp('leg_intrinsic')">?</button>
+              </span>
+              <input type="number" class="input-control" [value]="baseLegIntrinsicPreview ?? ''" readonly />
+              <div class="help-pop" *ngIf="visibleHelp === 'leg_intrinsic'">{{ fieldHelp.leg_intrinsic }}</div>
+            </label>
+            <label>
+              <span class="label-row">
+                Extrinsic portion
+                <button type="button" class="help-icon" (click)="toggleHelp('leg_extrinsic')">?</button>
+              </span>
+              <input type="number" class="input-control" [value]="baseLegExtrinsicPreview ?? ''" readonly />
+              <div class="help-pop" *ngIf="visibleHelp === 'leg_extrinsic'">{{ fieldHelp.leg_extrinsic }}</div>
+            </label>
+            <label>
+              <span class="label-row">
+                Tag
+                <button type="button" class="help-icon" (click)="toggleHelp('leg_tag')">?</button>
+              </span>
+              <select class="input-control" [(ngModel)]="baseLegDraft.tag">
+                <option *ngFor="let opt of legTagOptions" [ngValue]="opt">{{ opt }}</option>
+              </select>
+              <div class="help-pop" *ngIf="visibleHelp === 'leg_tag'">{{ fieldHelp.leg_tag }}</div>
+            </label>
+            <button type="button" class="btn-primary mt-2" (click)="submitBaseLeg()">Save leg</button>
+          </div>
+
+        </div>
+        <div *ngIf="businessError" class="state error small">{{ businessError }}</div>
+        <div *ngIf="businessSuccess" class="state success small">{{ businessSuccess }}</div>
+      </div>
+    </section>
+  </ng-container>
+
+  <ng-container *ngIf="activePage === 'trades'">
+    <!-- Trade entry and ledger content -->
+    <section class="entry-card">
+      <div class="entry-header">
+        <div>
+          <h2>Quick Trade Entry</h2>
+          <p>Stage trades with all required ledger fields and send straight to the XLSX.</p>
+        </div>
+        <div class="entry-actions">
+          <button
+            type="button"
+            class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft transition hover:border-accent/60 hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+            (click)="resetDraft()"
+          >
+            Reset form
+          </button>
+          <button
+            type="button"
+            class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft transition hover:border-accent/60 hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+            [disabled]="!pendingTrades.length"
+            (click)="clearStagedTrades()"
+          >
+            Clear staged
+          </button>
+        </div>
+      </div>
+
+      <div class="entry-grid">
+        <label *ngIf="positionMetrics.length">
+          <span>Base position</span>
+          <select
+            class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+            [(ngModel)]="selectedTradePositionId"
+            (ngModelChange)="onTradePositionSelect($event)"
+          >
+            <option [ngValue]="undefined">— None —</option>
+            <option *ngFor="let pm of positionMetrics" [ngValue]="pm.position.position_id">
+              {{ pm.position.symbol }} · {{ pm.position.strategy }} ({{ pm.position.base_type }})
+            </option>
+          </select>
+        </label>
+        <label *ngIf="tradeBaseLegOptions.length">
+          <span>Base leg</span>
+          <select
+            class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+            [(ngModel)]="selectedTradeBaseLegId"
+            (ngModelChange)="onTradeBaseLegSelect($event)"
+          >
+            <option [ngValue]="undefined">— None —</option>
+            <option *ngFor="let leg of filteredTradeBaseLegOptions()" [ngValue]="leg.base_leg_id">
+              {{ tradeBaseLegLabel(leg) }}
+            </option>
+          </select>
+        </label>
+        <label *ngIf="availableOpenShorts.length">
+          <span>Open short to close</span>
+          <select
+            class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+            [(ngModel)]="selectedOpenShortKey"
+            (ngModelChange)="onOpenShortSelect($event)"
+          >
+            <option [ngValue]="undefined">— None —</option>
+            <option *ngFor="let opt of availableOpenShorts" [ngValue]="opt.key">
+              {{ opt.label }}
+            </option>
+          </select>
+        </label>
+
+          <label>
+            <span>Action</span>
+            <select
+              class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+              [(ngModel)]="tradeDraft.action"
+              name="entryAction"
+              [disabled]="tradeActionLocked"
+              (ngModelChange)="onTradeActionChange($event)"
+            >
+              <option [ngValue]="'Open'">Open</option>
+              <option [ngValue]="'Close'">Close</option>
+              <option [ngValue]="'Mark'">Mark</option>
+            </select>
+          </label>
+
+        <ng-container *ngIf="!tradeStrategyLocked; else lockedStrategy">
+          <label>
+            <span>Strategy</span>
+            <select
+              class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+              [(ngModel)]="tradeDraft.strategy"
+              name="entryStrategy"
+              (ngModelChange)="onStrategyChange($event)"
+            >
+              <option [ngValue]="'CFM'">CFM</option>
+              <option [ngValue]="'JL'">JL</option>
+            </select>
+          </label>
+        </ng-container>
+        <ng-template #lockedStrategy>
+          <label>
+            <span>Strategy</span>
+            <input
+              class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm"
+              [value]="tradeDraft.strategy"
+              disabled
+            />
+          </label>
+        </ng-template>
+
+        <label>
+          <span>Side</span>
+          <select
+            class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30 disabled:opacity-60"
+            [(ngModel)]="tradeDraft.side"
+            name="entrySide"
+            [disabled]="tradeSideLocked || tradeDraft.strategy === 'CFM'"
+          >
+            <option [ngValue]="'Call'">Call</option>
+            <option [ngValue]="'Put'">Put</option>
+          </select>
+        </label>
+
+        <ng-container *ngIf="!tradeTickerLocked; else lockedTicker">
+          <label>
+            <span>Ticker</span>
+            <input
+              type="text"
+              class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+              [(ngModel)]="tradeDraft.ticker"
+              name="entryTicker"
+              (blur)="normalizeTicker()"
+              list="ticker-options"
+              placeholder="AAPL"
+            />
+            <datalist id="ticker-options">
+              <option *ngFor="let ticker of tickerSuggestions" [value]="ticker"></option>
+            </datalist>
+          </label>
+        </ng-container>
+        <ng-template #lockedTicker>
+          <label>
+            <span>Ticker</span>
+            <input
+              class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm"
+              [value]="tradeDraft.ticker"
+              disabled
+            />
+          </label>
+        </ng-template>
+
+          <label>
+            <span>Contracts</span>
+            <input
+              type="number"
+              step="1"
+              min="1"
+              [attr.max]="tradeContractsMax() ?? null"
+              class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+              [(ngModel)]="tradeDraft.contracts"
+              name="entryContracts"
+              (ngModelChange)="onTradeContractsChange($event)"
+            />
+          </label>
+
+        <label>
+          <span>Strike</span>
+          <input
+            type="number"
+            step="0.01"
+            class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+            [(ngModel)]="tradeDraft.strike"
+            name="entryStrike"
+            [disabled]="tradeStrikeLocked"
+          />
+        </label>
+
+        <label>
+          <span>Premium / Buyback</span>
+          <input
+            type="number"
+            step="0.01"
+            class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+            [(ngModel)]="tradeDraft.premium"
+            name="entryPremium"
+          />
+        </label>
+
+
+
+        <label>
+          <span>Trade date & time</span>
+          <input
+            type="datetime-local"
+            class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+            [(ngModel)]="tradeDraft.trade_datetime"
+            name="entryTradeDateTime"
+          />
+        </label>
+
+        <label>
+          <span>Expiration</span>
+          <input
+            type="date"
+            class="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+            [(ngModel)]="tradeDraft.expiry"
+            name="entryExpiry"
+            [disabled]="tradeExpiryLocked"
+          />
+        </label>
+      </div>
+
+      <div class="entry-actions">
+        <button
+          type="button"
+          class="rounded-lg bg-gradient-to-r from-accent to-accent-strong px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-[rgba(210,139,87,0.25)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+          [disabled]="!canStageTrade"
+          (click)="editingLedgerRowNumber ? saveLedgerEdit() : stageTrade()"
+        >
+          {{ editingLedgerRowNumber ? 'Save edit' : 'Stage trade' }}
+        </button>
+        <button
+          *ngIf="editingLedgerRowNumber"
+          type="button"
+          class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft transition hover:border-accent/60 hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+          (click)="cancelLedgerEdit()"
+        >
+          Cancel edit
+        </button>
+      </div>
+
+      <div *ngIf="entryError" class="state error small">{{ entryError }}</div>
+      <div *ngIf="entrySuccess" class="state success small">{{ entrySuccess }}</div>
+    </section>
+
+    <section *ngIf="loading" class="state">Loading metrics…</section>
+    <section *ngIf="error" class="state error">{{ error }}</section>
+
+    <section class="trades-panel" *ngIf="tradesLoading">
+      <p>Loading trades…</p>
+    </section>
+
+    <section class="trades-panel" *ngIf="pendingTrades.length">
+      <div class="staged-header">
+        <div>
+          <h2>Staged trades</h2>
+          <p>Submit directly to the ledger or copy the JSON for scripts.</p>
+        </div>
+        <div class="entry-actions">
+          <button
+            type="button"
+            class="rounded-lg bg-gradient-to-r from-accent to-accent-strong px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-[rgba(210,139,87,0.25)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+            [disabled]="submitLoading"
+            (click)="submitTrades()"
+          >
+            {{ submitLoading ? 'Submitting…' : 'Submit to journal' }}
+          </button>
+          <button
+            type="button"
+            class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft transition hover:border-accent/60 hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+            (click)="copyStagedTrades()"
+          >
+            Copy JSON
+          </button>
+          <button
+            type="button"
+            class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft transition hover:border-accent/60 hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+            (click)="clearStagedTrades()"
+          >
+            Clear
+          </button>
+        </div>
+      </div>
+
+      <div class="table-wrapper rounded-lg border border-border bg-surface-2/40">
+        <table
+          class="w-full border-collapse text-sm [&_th]:px-2 [&_th]:py-2 [&_td]:px-2 [&_td]:py-2 [&_th]:text-left [&_td]:text-left [&_tbody_tr]:border-b [&_tbody_tr]:border-border [&_tbody_tr:nth-child(even)]:bg-surface-2"
+        >
+          <thead class="text-xs uppercase tracking-wider text-muted">
+            <tr>
+              <th>Account</th>
+              <th>Trade Date/Time</th>
+              <th>Action</th>
+              <th>Side</th>
+              <th>Ticker</th>
+              <th>Strategy</th>
+              <th>Contracts</th>
+              <th>Strike</th>
+              <th>Expiry</th>
+              <th>Premium</th>
+              <th>Underlying</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr *ngFor="let trade of pendingTrades; let i = index">
+              <td>{{ trade.account }}</td>
+              <td>{{ trade.trade_datetime | date: 'medium' }}</td>
+              <td>{{ trade.action }}</td>
+              <td>{{ trade.side }}</td>
+              <td>{{ trade.ticker }}</td>
+              <td>{{ trade.strategy }}</td>
+              <td>{{ trade.contracts }}</td>
+              <td>{{ trade.strike }}</td>
+              <td>{{ trade.expiry | date: 'mediumDate' }}</td>
+              <td>{{ trade.premium }}</td>
+              <td>{{ trade.underlying }}</td>
+              <td class="flex gap-2">
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs text-soft transition hover:border-accent/60 hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+                  (click)="editStagedTrade(i)"
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs text-soft transition hover:border-accent/60 hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+                  (click)="removeStagedTrade(i)"
+                >
+                  Remove
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="json-preview">
+        <p>JSON preview ({{ pendingTrades.length }} staged)</p>
+        <pre>{{ stagedJson }}</pre>
+      </div>
+
+      <div *ngIf="copyFeedback" class="state small">{{ copyFeedback }}</div>
+      <div *ngIf="submitError" class="state error small">{{ submitError }}</div>
+      <div *ngIf="submitSuccess" class="state success small">{{ submitSuccess }}</div>
+    </section>
+
+    <section class="trades-panel">
+      <div class="staged-header">
+        <div>
+          <h2>Ledger View ({{ selectedAccountLabel }})</h2>
+          <p>Live rows pulled directly from the XLSX ledger.</p>
+        </div>
+        <div class="entry-actions gap-2">
+          <div class="flex items-center">
+          <button
+            type="button"
+            class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft transition hover:border-accent/60 hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+            [disabled]="ledgerLoading"
+            (click)="selectedAccount && loadLedger(selectedAccount)"
+          >
+            {{ ledgerLoading ? 'Refreshing…' : 'Refresh' }}
+          </button>
+          </div>
+        </div>
+      </div>
+
+      <div
+        class="ledger-filters"
+        *ngIf="
+          tickerFilterOptions.length ||
+          sideFilterOptions.length ||
+          strikeFilterOptions.length ||
+          expiryFilterOptions.length ||
+          baseLegFilterOptions.length
+        "
+      >
+        <div class="filter-dropdown" [class.open]="tickerFilterOpen" *ngIf="tickerFilterOptions.length">
+          <button
+            type="button"
+            class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft transition hover:border-accent/60 hover:text-text"
+            (click)="toggleTickerFilter()"
+          >
+            Tickers
+            <span class="rounded-full bg-accent/20 px-2 py-0.5 text-xs text-accent-strong" *ngIf="selectedTickers.length">
+              {{ selectedTickers.length }} selected
+            </span>
+          </button>
+          <div
+            class="absolute left-0 top-full z-10 mt-2 max-h-60 w-56 overflow-auto rounded-lg border border-border bg-surface p-2 shadow-xl shadow-[rgba(8,12,21,0.65)]"
+            *ngIf="tickerFilterOpen"
+          >
+            <label class="flex items-center gap-2 px-1 py-1 text-sm text-text">
+              <input
+                type="checkbox"
+                class="h-4 w-4 rounded border-border bg-surface-2 text-accent focus:ring-2 focus:ring-accent/30"
+                [checked]="isAllTickersSelected()"
+                (change)="toggleAllTickers($event.target.checked)"
+              />
+              <span>Select all</span>
+            </label>
+            <div class="my-2 h-px bg-border"></div>
+            <label class="flex items-center gap-2 px-1 py-1 text-sm text-text" *ngFor="let ticker of tickerFilterOptions">
+              <input
+                type="checkbox"
+                class="h-4 w-4 rounded border-border bg-surface-2 text-accent focus:ring-2 focus:ring-accent/30"
+                [checked]="selectedTickers.includes(ticker)"
+                (change)="toggleTickerSelection(ticker, $event.target.checked)"
+              />
+              <span>{{ ticker }}</span>
+            </label>
+          </div>
+        </div>
+        <div class="text-xs text-muted" *ngIf="tickerFilterOptions.length && !selectedTickers.length">
+          All tickers selected
+        </div>
+        <div class="filter-dropdown" [class.open]="sideFilterOpen" *ngIf="sideFilterOptions.length">
+          <button
+            type="button"
+            class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft transition hover:border-accent/60 hover:text-text"
+            (click)="toggleSideFilter()"
+          >
+            Side
+            <span class="rounded-full bg-accent/20 px-2 py-0.5 text-xs text-accent-strong" *ngIf="selectedSides.length">
+              {{ selectedSides.length }} selected
+            </span>
+          </button>
+          <div
+            class="absolute left-0 top-full z-10 mt-2 max-h-60 w-56 overflow-auto rounded-lg border border-border bg-surface p-2 shadow-xl shadow-[rgba(8,12,21,0.65)]"
+            *ngIf="sideFilterOpen"
+          >
+            <label class="flex items-center gap-2 px-1 py-1 text-sm text-text">
+              <input
+                type="checkbox"
+                class="h-4 w-4 rounded border-border bg-surface-2 text-accent focus:ring-2 focus:ring-accent/30"
+                [checked]="isAllSidesSelected()"
+                (change)="toggleAllSides($event.target.checked)"
+              />
+              <span>Select all</span>
+            </label>
+            <div class="my-2 h-px bg-border"></div>
+            <label class="flex items-center gap-2 px-1 py-1 text-sm text-text" *ngFor="let side of sideFilterOptions">
+              <input
+                type="checkbox"
+                class="h-4 w-4 rounded border-border bg-surface-2 text-accent focus:ring-2 focus:ring-accent/30"
+                [checked]="selectedSides.includes(side)"
+                (change)="toggleSideSelection(side, $event.target.checked)"
+              />
+              <span>{{ side }}</span>
+            </label>
+          </div>
+        </div>
+        <div class="text-xs text-muted" *ngIf="sideFilterOptions.length && !selectedSides.length">
+          All sides selected
+        </div>
+        <div class="filter-dropdown" [class.open]="strikeFilterOpen" *ngIf="strikeFilterOptions.length">
+          <button
+            type="button"
+            class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft transition hover:border-accent/60 hover:text-text"
+            (click)="toggleStrikeFilter()"
+          >
+            Strike
+            <span class="rounded-full bg-accent/20 px-2 py-0.5 text-xs text-accent-strong" *ngIf="selectedStrikes.length">
+              {{ selectedStrikes.length }} selected
+            </span>
+          </button>
+          <div
+            class="absolute left-0 top-full z-10 mt-2 max-h-60 w-56 overflow-auto rounded-lg border border-border bg-surface p-2 shadow-xl shadow-[rgba(8,12,21,0.65)]"
+            *ngIf="strikeFilterOpen"
+          >
+            <label class="flex items-center gap-2 px-1 py-1 text-sm text-text">
+              <input
+                type="checkbox"
+                class="h-4 w-4 rounded border-border bg-surface-2 text-accent focus:ring-2 focus:ring-accent/30"
+                [checked]="isAllStrikesSelected()"
+                (change)="toggleAllStrikes($event.target.checked)"
+              />
+              <span>Select all</span>
+            </label>
+            <div class="my-2 h-px bg-border"></div>
+            <label class="flex items-center gap-2 px-1 py-1 text-sm text-text" *ngFor="let strike of strikeFilterOptions">
+              <input
+                type="checkbox"
+                class="h-4 w-4 rounded border-border bg-surface-2 text-accent focus:ring-2 focus:ring-accent/30"
+                [checked]="selectedStrikes.includes(strike)"
+                (change)="toggleStrikeSelection(strike, $event.target.checked)"
+              />
+              <span>{{ strike }}</span>
+            </label>
+          </div>
+        </div>
+        <div class="text-xs text-muted" *ngIf="strikeFilterOptions.length && !selectedStrikes.length">
+          All strikes selected
+        </div>
+        <div class="filter-dropdown" [class.open]="expiryFilterOpen" *ngIf="expiryFilterOptions.length">
+          <button
+            type="button"
+            class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft transition hover:border-accent/60 hover:text-text"
+            (click)="toggleExpiryFilter()"
+          >
+            Expiry
+            <span class="rounded-full bg-accent/20 px-2 py-0.5 text-xs text-accent-strong" *ngIf="selectedExpiries.length">
+              {{ selectedExpiries.length }} selected
+            </span>
+          </button>
+          <div
+            class="absolute left-0 top-full z-10 mt-2 max-h-60 w-56 overflow-auto rounded-lg border border-border bg-surface p-2 shadow-xl shadow-[rgba(8,12,21,0.65)]"
+            *ngIf="expiryFilterOpen"
+          >
+            <label class="flex items-center gap-2 px-1 py-1 text-sm text-text">
+              <input
+                type="checkbox"
+                class="h-4 w-4 rounded border-border bg-surface-2 text-accent focus:ring-2 focus:ring-accent/30"
+                [checked]="isAllExpiriesSelected()"
+                (change)="toggleAllExpiries($event.target.checked)"
+              />
+              <span>Select all</span>
+            </label>
+            <div class="my-2 h-px bg-border"></div>
+            <label class="flex items-center gap-2 px-1 py-1 text-sm text-text" *ngFor="let expiry of expiryFilterOptions">
+              <input
+                type="checkbox"
+                class="h-4 w-4 rounded border-border bg-surface-2 text-accent focus:ring-2 focus:ring-accent/30"
+                [checked]="selectedExpiries.includes(expiry)"
+                (change)="toggleExpirySelection(expiry, $event.target.checked)"
+              />
+              <span>{{ expiry }}</span>
+            </label>
+          </div>
+        </div>
+        <div class="text-xs text-muted" *ngIf="expiryFilterOptions.length && !selectedExpiries.length">
+          All expiries selected
+        </div>
+        <div class="filter-dropdown" [class.open]="baseLegFilterOpen" *ngIf="baseLegFilterOptions.length">
+          <button
+            type="button"
+            class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft transition hover:border-accent/60 hover:text-text"
+            (click)="toggleBaseLegFilter()"
+          >
+            Base leg
+            <span class="rounded-full bg-accent/20 px-2 py-0.5 text-xs text-accent-strong" *ngIf="selectedBaseLegIds.length">
+              {{ selectedBaseLegIds.length }} selected
+            </span>
+          </button>
+          <div
+            class="absolute left-0 top-full z-10 mt-2 max-h-60 w-56 overflow-auto rounded-lg border border-border bg-surface p-2 shadow-xl shadow-[rgba(8,12,21,0.65)]"
+            *ngIf="baseLegFilterOpen"
+          >
+            <label class="flex items-center gap-2 px-1 py-1 text-sm text-text">
+              <input
+                type="checkbox"
+                class="h-4 w-4 rounded border-border bg-surface-2 text-accent focus:ring-2 focus:ring-accent/30"
+                [checked]="isAllBaseLegsSelected()"
+                (change)="toggleAllBaseLegs($event.target.checked)"
+              />
+              <span>Select all</span>
+            </label>
+            <div class="my-2 h-px bg-border"></div>
+            <label class="flex items-center gap-2 px-1 py-1 text-sm text-text" *ngFor="let baseLegId of baseLegFilterOptions">
+              <input
+                type="checkbox"
+                class="h-4 w-4 rounded border-border bg-surface-2 text-accent focus:ring-2 focus:ring-accent/30"
+                [checked]="selectedBaseLegIds.includes(baseLegId)"
+                (change)="toggleBaseLegSelection(baseLegId, $event.target.checked)"
+              />
+              <span>{{ baseLegId }}</span>
+            </label>
+          </div>
+        </div>
+        <div class="text-xs text-muted" *ngIf="baseLegFilterOptions.length && !selectedBaseLegIds.length">
+          All base legs selected
+        </div>
+      </div>
+
+      <div *ngIf="ledgerError" class="state error small">{{ ledgerError }}</div>
+      <div *ngIf="ledgerLoading" class="state small">Loading ledger…</div>
+      <div *ngIf="!ledgerLoading && !ledgerRows.length" class="state small">
+        No ledger rows found for {{ selectedAccountLabel }}.
+      </div>
+
+      <div class="table-wrapper" *ngIf="ledgerRows.length">
+        <div class="totals-block" *ngIf="expiryMonthGroups.length">
+          <h3>Juice by Expiry</h3>
+          <table
+            class="w-full border-collapse text-sm [&_th]:px-2 [&_th]:py-2 [&_td]:px-2 [&_td]:py-2 [&_th]:text-left [&_td]:text-left [&_tbody_tr]:border-b [&_tbody_tr]:border-border [&_tbody_tr:nth-child(even)]:bg-surface-2"
+          >
+            <thead class="text-xs uppercase tracking-wider text-muted">
+              <tr>
+                <th></th>
+                <th>Expiry Month</th>
+                <th>Net Premium</th>
+                <th>Net Juice</th>
+                <th>Net Protection</th>
+              </tr>
+            </thead>
+            <tbody>
+              <ng-container *ngFor="let group of expiryMonthGroups">
+                <tr>
+                  <td>
+                    <button
+                      type="button"
+                      class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs text-soft transition hover:border-accent/60 hover:text-text"
+                      (click)="toggleExpiryMonth(group.month)"
+                    >
+                      {{ expandedExpiryMonths.has(group.month) ? 'Hide' : 'Show' }}
+                  </button>
+                </td>
+                <td>{{ group.month }}</td>
+                <td>{{ formatSummaryAllPer100('premium', group) }}</td>
+                <td>{{ formatSummaryAllPer100('juice', group) }}</td>
+                <td>{{ formatSummaryAllPer100('protection', group) }}</td>
+              </tr>
+              <tr *ngIf="expandedExpiryMonths.has(group.month)">
+                <td colspan="5">
+                  <div class="table-wrapper rounded-lg border border-border bg-surface-2/40">
+                    <table
+                      class="w-full border-collapse text-xs [&_th]:px-2 [&_th]:py-2 [&_td]:px-2 [&_td]:py-2 [&_th]:text-left [&_td]:text-left [&_tbody_tr]:border-b [&_tbody_tr]:border-border [&_tbody_tr:nth-child(even)]:bg-surface-2"
+                    >
+                      <thead class="text-[0.65rem] uppercase tracking-wider text-muted">
+                          <tr>
+                            <th>Expiration</th>
+                            <th>Net Premium</th>
+                            <th>Net Juice</th>
+                            <th>Net Protection</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr *ngFor="let total of group.children">
+                            <td>{{ total.expiry }}</td>
+                            <td>{{ formatSummaryAllPer100('premium', total) }}</td>
+                            <td>{{ formatSummaryAllPer100('juice', total) }}</td>
+                            <td>{{ formatSummaryAllPer100('protection', total) }}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </td>
+                </tr>
+              </ng-container>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="pager">
+          <div class="pager-left">
+            <div>{{ ledgerRangeLabel }}</div>
+            <label class="checkbox">
+              <input
+                type="checkbox"
+                class="h-4 w-4 rounded border-border bg-surface-2 text-accent focus:ring-2 focus:ring-accent/30"
+                [checked]="ledgerOpenOnly"
+                (change)="toggleOpenOnly()"
+              />
+              <span>Show open positions only</span>
+            </label>
+          </div>
+          <div class="pager-controls">
+            <button
+              type="button"
+              class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft transition hover:border-accent/60 hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+              [disabled]="ledgerPage === 1"
+              (click)="prevLedgerPage()"
+            >
+              Prev
+            </button>
+            <span>Page {{ ledgerPage }} / {{ ledgerTotalPages }}</span>
+            <button
+              type="button"
+              class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-soft transition hover:border-accent/60 hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+              [disabled]="ledgerPage === ledgerTotalPages"
+              (click)="nextLedgerPage()"
+            >
+              Next
+            </button>
+            <label class="page-size">
+              <span>Rows</span>
+              <select
+                class="rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+                [ngModel]="ledgerPageSize"
+                (ngModelChange)="onLedgerPageSizeChange($event)"
+              >
+                <option [ngValue]="10">10</option>
+                <option [ngValue]="20">20</option>
+                <option [ngValue]="50">50</option>
+                <option [ngValue]="100">100</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <table
+          class="w-full border-collapse text-sm [&_th]:px-2 [&_th]:py-2 [&_td]:px-2 [&_td]:py-2 [&_th]:text-left [&_td]:text-left [&_tbody_tr]:border-b [&_tbody_tr]:border-border [&_tbody_tr:nth-child(even)]:bg-surface-2"
+        >
+          <thead class="text-xs uppercase tracking-wider text-muted">
+            <tr>
+              <th></th>
+              <th class="sortable cursor-pointer select-none" (click)="onLedgerSort('ticker', $event)">
+                Ticker <span class="ml-1 text-[0.7em] opacity-70">{{ ledgerSortIndicator('ticker') }}</span>
+              </th>
+              <th class="sortable cursor-pointer select-none" (click)="onLedgerSort('side', $event)">
+                Side <span class="ml-1 text-[0.7em] opacity-70">{{ ledgerSortIndicator('side') }}</span>
+              </th>
+              <th class="sortable cursor-pointer select-none" (click)="onLedgerSort('strike', $event)">
+                Strike <span class="ml-1 text-[0.7em] opacity-70">{{ ledgerSortIndicator('strike') }}</span>
+              </th>
+              <th class="sortable cursor-pointer select-none" (click)="onLedgerSort('expiry', $event)">
+                Expiry <span class="ml-1 text-[0.7em] opacity-70">{{ ledgerSortIndicator('expiry') }}</span>
+              </th>
+              <th class="sortable cursor-pointer select-none" (click)="onLedgerSort('netContracts', $event)">
+                Net Contracts
+                <span class="ml-1 text-[0.7em] opacity-70">{{ ledgerSortIndicator('netContracts') }}</span>
+              </th>
+              <th class="sortable cursor-pointer select-none" (click)="onLedgerSort('netPremium', $event)">
+                Net Premium
+                <span class="ml-1 text-[0.7em] opacity-70">{{ ledgerSortIndicator('netPremium') }}</span>
+              </th>
+              <th class="sortable cursor-pointer select-none" (click)="onLedgerSort('netJuice', $event)">
+                Net Juice <span class="ml-1 text-[0.7em] opacity-70">{{ ledgerSortIndicator('netJuice') }}</span>
+              </th>
+              <th class="sortable cursor-pointer select-none" (click)="onLedgerSort('netProtection', $event)">
+                Net Protection
+                <span class="ml-1 text-[0.7em] opacity-70">{{ ledgerSortIndicator('netProtection') }}</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <ng-container *ngFor="let summary of pagedLedgerSummaries">
+              <tr>
+                <td>
+                  <button
+                    type="button"
+                    class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs text-soft transition hover:border-accent/60 hover:text-text"
+                    (click)="toggleSummary(summary.key)"
+                  >
+                    {{ expandedSummaries.has(summary.key) ? 'Hide' : 'Show' }}
+                  </button>
+                </td>
+                <td>{{ summary.ticker }}</td>
+                <td>{{ summary.side }}</td>
+                <td>{{ summary.strike || '—' }}</td>
+                <td>{{ summary.expiry || '—' }}</td>
+                <td>{{ summary.netContracts }}</td>
+                <td>{{ formatSummaryValue('premium', summary) }}</td>
+                <td>{{ formatSummaryValue('juice', summary) }}</td>
+                <td>{{ formatSummaryValue('protection', summary) }}</td>
+              </tr>
+              <tr *ngIf="expandedSummaries.has(summary.key)">
+                <td colspan="9">
+                  <div class="table-wrapper rounded-lg border border-border bg-surface-2/40">
+                    <table
+                      class="w-full border-collapse text-xs [&_th]:px-2 [&_th]:py-2 [&_td]:px-2 [&_td]:py-2 [&_th]:text-left [&_td]:text-left [&_tbody_tr]:border-b [&_tbody_tr]:border-border [&_tbody_tr:nth-child(even)]:bg-surface-2"
+                    >
+                      <thead class="text-[0.65rem] uppercase tracking-wider text-muted">
+                        <tr>
+                          <th>Date</th>
+                          <th>Action</th>
+                          <th>Side</th>
+                          <th>Contracts</th>
+                          <th>Premium/Buyback</th>
+                          <th>Underlying</th>
+                          <th>Juice/Contract</th>
+                          <th>Protection</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr *ngFor="let row of summary.rows">
+                          <td>{{ row.date | date: 'medium' }}</td>
+                          <td>{{ row.action || '—' }}</td>
+                          <td>{{ row.side || '—' }}</td>
+                          <td>{{ row.contracts ?? '—' }}</td>
+                          <td>{{ formatDetailValue('premium', row) }}</td>
+                          <td>{{ row.underlying ?? '—' }}</td>
+                          <td>{{ formatDetailValue('juice', row) }}</td>
+                          <td>{{ formatDetailValue('protection', row) }}</td>
+                          <td class="flex gap-2">
+                            <button
+                              type="button"
+                              class="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs text-soft transition hover:border-accent/60 hover:text-text"
+                              (click)="startLedgerRowEdit(row)"
+                            >
+                              Edit
+                            </button>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </td>
+              </tr>
+            </ng-container>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </ng-container>
+</div>

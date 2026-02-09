@@ -1,0 +1,30 @@
+<div class="summary-grid">
+  <div class="summary-card">
+    <div class="label">Avg Weekly Net Juice</div>
+    <div class="value">{{ summary.realizedNetJuiceWtd | currency:'USD':'symbol':'1.0-0' }}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Weekly Goal</div>
+    <div class="value">{{ summary.weeklyGoalDollars | currency:'USD':'symbol':'1.0-0' }}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Cash Balance</div>
+    <div class="value">{{ summary.cashBalance | currency:'USD':'symbol':'1.0-0' }}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Buyback Reserve Required</div>
+    <div class="value">{{ buybackReserveRequired | currency:'USD':'symbol':'1.0-0' }}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Defense Reserve Required</div>
+    <div class="value">{{ defenseReserveRequired | currency:'USD':'symbol':'1.0-0' }}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Reserved Cash Required</div>
+    <div class="value">{{ reservedCashRequired | currency:'USD':'symbol':'1.0-0' }}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Free Cash</div>
+    <div class="value">{{ freeCash | currency:'USD':'symbol':'1.0-0' }}</div>
+  </div>
+</div>

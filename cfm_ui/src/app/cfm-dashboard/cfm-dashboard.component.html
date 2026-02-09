@@ -1,0 +1,37 @@
+<section class="dashboard">
+  <div class="section-header">
+    <div>
+      <h2>CFM Dashboard</h2>
+      <p class="text-muted">Account reserves and base posture overview.</p>
+    </div>
+    <div class="header-actions">
+      <a class="btn-nav" routerLink="/dashboard/legacy" [queryParams]="{ page: 'trades' }">Trades & Ledger</a>
+      <div class="account-selector" *ngIf="accounts.length">
+        <label for="account-select">Account</label>
+        <select
+          id="account-select"
+          class="input-control mt-1 rounded-full px-4"
+          [value]="selectedAccount"
+          (change)="onAccountChange($event.target.value)"
+        >
+          <option *ngFor="let account of accounts" [value]="account.name">
+            {{ account.label }}
+          </option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="state" *ngIf="loading">Loading dashboard...</div>
+  <div class="state error" *ngIf="error">{{ error }}</div>
+
+  <app-account-summary *ngIf="summary && !loading" [summary]="summary"></app-account-summary>
+
+  <div class="table-card">
+    <div class="table-header">
+      <h3>Positions</h3>
+      <span class="text-muted">One row per ticker with regime, base status, and circuit breakers.</span>
+    </div>
+    <app-positions-table [positions]="positions"></app-positions-table>
+  </div>
+</section>

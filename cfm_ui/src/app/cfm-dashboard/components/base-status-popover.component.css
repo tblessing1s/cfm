@@ -1,0 +1,59 @@
+.popover {
+  position: relative;
+  display: inline-flex;
+}
+
+.info-button {
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.panel {
+  position: absolute;
+  top: 120%;
+  right: 0;
+  width: 280px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 0.75rem;
+  box-shadow: 0 18px 36px var(--shadow);
+  z-index: 30;
+}
+
+.panel-title {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+  margin-bottom: 0.5rem;
+}
+
+.panel-row {
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-row:last-child {
+  border-bottom: none;
+}
+
+.panel-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.panel-text {
+  font-size: 0.75rem;
+  color: var(--text-soft);
+}

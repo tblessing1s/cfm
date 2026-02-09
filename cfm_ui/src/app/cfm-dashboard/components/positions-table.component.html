@@ -1,0 +1,48 @@
+<div class="table-wrapper" *ngIf="positions.length; else emptyState">
+  <table class="positions-table">
+    <thead>
+      <tr>
+        <th>Ticker</th>
+        <th>Regime</th>
+        <th>Base Status</th>
+        <th>CB Status</th>
+        <th>Long DTE</th>
+        <th>Long Delta</th>
+        <th>Target Weekly %</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr *ngFor="let pos of positions">
+        <td class="ticker">{{ pos.ticker }}</td>
+        <td>
+          <app-status-badge [label]="pos.regime" [tone]="regimeTone(pos.regime)"></app-status-badge>
+        </td>
+        <td>
+          <div class="status-cell">
+            <app-status-badge [label]="pos.baseStatus" [tone]="baseStatusTone(pos.baseStatus)"></app-status-badge>
+            <app-base-status-popover></app-base-status-popover>
+          </div>
+        </td>
+        <td>
+          <div class="status-cell">
+            <app-status-badge
+              [label]="pos.circuitBreakerStatus"
+              [tone]="circuitBreakerTone(pos.circuitBreakerStatus)"
+            ></app-status-badge>
+            <app-circuit-breaker-popover
+              [circuitBreakers]="pos.circuitBreakers"
+              [status]="pos.circuitBreakerStatus"
+            ></app-circuit-breaker-popover>
+          </div>
+        </td>
+        <td>{{ pos.longDte }}</td>
+        <td>{{ pos.longDelta | number:'1.2-2' }}</td>
+        <td>{{ weeklyTargetLabel(pos.weeklyTargetPct) }}</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<ng-template #emptyState>
+  <div class="empty">No positions yet.</div>
+</ng-template>

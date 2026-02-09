@@ -2510,17 +2510,126 @@ def _drawdown(nav_series: pd.Series) -> Tuple[Optional[float], Optional[float]]:
     return current, dd
 
 
-def _consistency(trades: pd.DataFrame, weeks: int = 13) -> Tuple[float, float]:
-    if trades.empty:
+def _consistency(trades: pd.DataFrame, account: Optional[str], weeks: int = 13) -> Tuple[float, float]:
+    """Compute average weekly net juice using expiry-week net juice from ledger rows.
+
+    Net juice follows the Trades & Ledger logic: sum signed extrinsic by short pair,
+    then include only fully paired positions (net contracts == 0). Filter to open
+    base positions using base_leg_id first.
+    """
+    ledger_rows = excel_loader.get_ledger_rows(account)
+    if not ledger_rows:
         return 0.0, 0.0
-    working = trades.copy()
-    working["week_start"] = working["date"] - pd.to_timedelta(working["date"].dt.weekday, unit="D")
-    grouped = working.groupby("week_start")["juice"].sum().sort_index()
-    recent = grouped.tail(weeks)
-    if recent.empty:
+
+    open_leg_ids: set[str] = set()
+    try:
+        legs_df = business_loader.list_base_legs()
+        if not legs_df.empty and "tag" in legs_df.columns:
+            legs_df = legs_df[legs_df["tag"].astype(str).str.upper() == "MARK"]
+        if not legs_df.empty and "base_leg_id" in legs_df.columns:
+            open_leg_ids = set(legs_df["base_leg_id"].astype(str).str.strip())
+    except Exception:
+        open_leg_ids = set()
+
+    def _pair_key(row: Dict[str, object]) -> str:
+        ticker = str(row.get("ticker") or "").upper()
+        side = str(row.get("side") or "").upper()
+        strike = row.get("strike")
+        try:
+            strike_str = f"{float(strike):.4f}" if strike is not None else ""
+        except Exception:
+            strike_str = ""
+        expiry = str(row.get("expiry") or "")
+        base_leg_id = str(row.get("base_leg_id") or "").strip()
+        return f"{ticker}|{side}|{strike_str}|{expiry}|{base_leg_id}"
+
+    def _signed_juice_dict(row: Dict[str, object]) -> float | None:
+        premium = row.get("premium_buyback")
+        contracts = row.get("contracts")
+        if premium is None or contracts is None:
+            return None
+        try:
+            premium = float(premium)
+            contracts = float(contracts)
+        except Exception:
+            return None
+        strike = row.get("strike")
+        underlying = row.get("underlying")
+        side = str(row.get("side") or "").lower()
+        action = str(row.get("action") or "").lower()
+        is_put = "put" in side
+        is_close = "close" in action
+        try:
+            strike_f = float(strike) if strike is not None else None
+        except Exception:
+            strike_f = None
+        try:
+            underlying_f = float(underlying) if underlying is not None else None
+        except Exception:
+            underlying_f = None
+        if strike_f is not None and underlying_f is not None:
+            intrinsic = max(0, strike_f - underlying_f) if is_put else max(0, underlying_f - strike_f)
+            extrinsic = premium - intrinsic
+            if is_close:
+                juice_per_contract = abs(extrinsic) if extrinsic < 0 else -extrinsic
+            else:
+                juice_per_contract = extrinsic
+        else:
+            if is_close:
+                juice_per_contract = abs(premium) if premium < 0 else -premium
+            else:
+                juice_per_contract = premium
+        return round(float(juice_per_contract * contracts * CONTRACT_MULTIPLIER), 2)
+
+    # Filter ledger rows for open base legs and usable data.
+    filtered: list[Dict[str, object]] = []
+    for row in ledger_rows:
+        if "MARK" in str(row.get("action") or "").upper():
+            continue
+        base_leg_id = str(row.get("base_leg_id") or "").strip()
+        if open_leg_ids and base_leg_id not in open_leg_ids:
+            continue
+        if not row.get("expiry") or not row.get("contracts"):
+            continue
+        filtered.append(row)
+    if not filtered:
         return 0.0, 0.0
-    profitable_pct = (recent > 0).mean() * 100.0
-    avg_weekly = recent.mean()
+
+    # Group by short pair key.
+    pairs: dict[str, list[Dict[str, object]]] = {}
+    for row in filtered:
+        key = _pair_key(row)
+        pairs.setdefault(key, []).append(row)
+
+    # Weekly totals (expiry week), only fully paired positions.
+    weekly: dict[str, float] = {}
+    for rows in pairs.values():
+        net_contracts = 0.0
+        for row in rows:
+            try:
+                contracts = float(row.get("contracts") or 0)
+            except Exception:
+                contracts = 0.0
+            action = str(row.get("action") or "").lower()
+            net_contracts += -contracts if "close" in action else contracts
+        if abs(net_contracts) > 1e-6:
+            continue
+        expiry = str(rows[0].get("expiry") or "")
+        try:
+            exp_dt = datetime.fromisoformat(expiry)
+        except Exception:
+            continue
+        week_start = exp_dt - timedelta(days=exp_dt.weekday())
+        net_juice = sum((_signed_juice_dict(row) or 0.0) for row in rows)
+        week_key = week_start.date().isoformat()
+        weekly[week_key] = weekly.get(week_key, 0.0) + net_juice
+
+    if not weekly:
+        return 0.0, 0.0
+    sorted_weeks = sorted(weekly.items())
+    recent = sorted_weeks[-weeks:]
+    avg_weekly = sum(v for _, v in recent) / len(recent)
+    profitable_pct = (sum(1 for _, v in recent if v > 0) / len(recent)) * 100.0
     return float(profitable_pct), float(avg_weekly)
 
 
@@ -3687,7 +3796,7 @@ def business_dashboard(
     weekly_yield = _safe_ratio(week_juice, nav_week_start)
     monthly_yield = _safe_ratio(month_juice, nav_month_start)
 
-    profitable_pct, avg_weekly = _consistency(trades)
+    profitable_pct, avg_weekly = _consistency(trades, account)
 
     contributed = _contributed_capital(snapshots)
     nav_current, drawdown = _drawdown(snapshots["nav_total"]) if "nav_total" in snapshots else (None, None)

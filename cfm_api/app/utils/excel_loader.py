@@ -147,10 +147,19 @@ def get_available_accounts() -> List[Dict[str, str]]:
 
 def get_all_trades(account: str | None = None) -> pd.DataFrame:
     df = _load_trades(account).copy()
+    rename_map = {
+        "symbol": "ticker",
+        "premium/buyback": "premium_buyback",
+        "underlying_price": "underlying",
+    }
+    for src, dest in rename_map.items():
+        if src in df.columns:
+            df[dest] = df[src]
     df = _ensure_core_columns(df)
     df = _normalize_missing(df)
     if not df.empty:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df = _ensure_juice_columns(df)
     return df.drop(columns=["notes"], errors="ignore")
 
 
@@ -197,6 +206,35 @@ def _normalize_missing(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     return df.replace({np.nan: None})
+
+
+def _ensure_juice_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Populate juice-related fields if missing, based on premium/strike/underlying."""
+    if df.empty:
+        return df
+
+    for col in ["juice_per_contract", "signed_juice_dollars", "signed_juice_per_100"]:
+        if col not in df.columns:
+            df[col] = None
+
+    def _hydrate(row: pd.Series) -> pd.Series:
+        if pd.isna(row.get("signed_juice_dollars")):
+            fields = _compute_juice_fields(row.to_dict())
+            for key, value in fields.items():
+                if row.get(key) is None and value is not None:
+                    row[key] = value
+        return row
+
+    df = df.apply(_hydrate, axis=1)
+
+    if "juice" in df.columns:
+        df["juice"] = pd.to_numeric(df.get("juice"), errors="coerce")
+        signed = pd.to_numeric(df.get("signed_juice_dollars"), errors="coerce")
+        mask = df["juice"].isna() | (df["juice"] == 0)
+        df.loc[mask, "juice"] = signed
+        df["juice"] = df["juice"].fillna(0.0)
+
+    return df
 
 
 def _compute_juice_fields(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -1060,6 +1098,11 @@ def get_ledger_rows(account: str | None = None) -> List[Dict[str, Any]]:
                 normalized.get("side"),
                 normalized.get("action"),
             )
+        if normalized.get("signed_juice_dollars") is None:
+            fields = _compute_juice_fields(normalized)
+            for key, value in fields.items():
+                if normalized.get(key) is None and value is not None:
+                    normalized[key] = value
         exp_val = normalized.get("expiry")
         if hasattr(exp_val, "isoformat"):
             try:
@@ -1125,11 +1168,12 @@ def get_weekly_summary(account: str | None = None) -> pd.DataFrame:
 
     trades = trades.copy()
     trades["date"] = pd.to_datetime(trades["date"], errors="coerce")
+    trades["expiry"] = pd.to_datetime(trades.get("expiry"), errors="coerce")
 
     working = trades.copy()
-    working["week_start"] = (
-        working["date"] - pd.to_timedelta(working["date"].dt.weekday, unit="D")
-    )
+    # Weekly summary is grouped by expiry week (Mon–Sun containing expiry).
+    basis_date = working["expiry"].where(working["expiry"].notna(), working["date"])
+    working["week_start"] = basis_date - pd.to_timedelta(basis_date.dt.weekday, unit="D")
 
     summary = (
         working.groupby(["week_start", "strategy"], as_index=False)
